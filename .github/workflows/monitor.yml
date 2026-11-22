@@ -17,6 +17,7 @@ jobs:
       - name: Check bot health
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           runs=$(gh run list --workflow=bot.yml --limit 6 \
             --json databaseId,status,conclusion,createdAt,updatedAt)
