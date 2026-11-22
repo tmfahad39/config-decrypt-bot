@@ -19,6 +19,7 @@ import tempfile
 
 from telegram import (
     CopyTextButton,
+    ForceReply,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update,
@@ -47,7 +48,7 @@ SUPPORTED = {".hc", ".dark", ".ssc"}
 MAX_FILE_BYTES = 5 * 1024 * 1024  # 5 MB
 DECODE_TIMEOUT = 30  # seconds
 
-# prompt message id -> {chat_id, name, data}
+# (chat id, prompt message id) -> pending file and uploader
 PENDING_PASSWORD = {}
 
 
@@ -65,7 +66,7 @@ def is_password_error(text: str) -> bool:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
         "Send me a VPN config file (.hc, .dark or .ssc) and I'll send back "
-        "the decrypted JSON.\n\nIf a file is password protected I'll ask you "
+        "the decoded details.\n\nIf a file is password protected I'll ask you "
         "for the password in a reply.\n\nUse /help for details."
     )
 
@@ -74,9 +75,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.effective_message.reply_text(
         "Config Decrypt Bot\n\n"
         "Supported files: .hc, .dark, .ssc\n"
-        "Send a file as a document and I will reply with the decoded JSON.\n"
+        "Send a file as a document and I will reply with formatted details.\n"
         "Password protected files: reply to my password prompt with the "
-        "password.\n\n"
+        "password. Only the uploader can answer the password prompt.\n\n"
+        "Groups: add me and disable privacy mode in @BotFather using "
+        "/setprivacy so I can receive files. Decoded credentials are "
+        "visible to everyone in the group.\n\n"
         "Commands:\n"
         "/start - introduction\n"
         "/help  - this message\n\n"
@@ -299,7 +303,10 @@ async def send_result(message, name: str, result: str) -> None:
     text, pairs = format_result(result, Path(name).stem)
     rows = _copy_rows(pairs)
     markup = InlineKeyboardMarkup(rows) if rows else None
-    await message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    await message.reply_text(
+        text, parse_mode=ParseMode.HTML, reply_markup=markup,
+        do_quote=message.chat.type in ("group", "supergroup"),
+    )
 
 
 async def decode_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -311,6 +318,8 @@ async def decode_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     name = document.file_name or "config"
     suffix = Path(name).suffix.lower()
     if suffix not in SUPPORTED:
+        if message.chat.type in ("group", "supergroup"):
+            return
         await message.reply_text(
             f"Unsupported file type: {suffix or '(none)'}. "
             "Send a .hc, .dark or .ssc file."
@@ -337,10 +346,13 @@ async def decode_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if is_password_error(text):
         prompt = await message.reply_text(
-            "\U0001f512 Password Protected\n\nReply with password."
+            "\U0001f512 Password Protected\n\nReply with password.",
+            reply_markup=ForceReply(selective=True),
+            do_quote=True,
         )
-        PENDING_PASSWORD[prompt.message_id] = {
+        PENDING_PASSWORD[(message.chat_id, prompt.message_id)] = {
             "chat_id": message.chat_id,
+            "user_id": message.from_user.id if message.from_user else None,
             "name": name,
             "data": data,
         }
@@ -356,8 +368,11 @@ async def handle_password_reply(
     message = update.effective_message
     if not message or not message.reply_to_message:
         return
-    pending = PENDING_PASSWORD.get(message.reply_to_message.message_id)
+    pending_key = (message.chat_id, message.reply_to_message.message_id)
+    pending = PENDING_PASSWORD.get(pending_key)
     if pending is None:
+        return
+    if message.from_user is None or message.from_user.id != pending["user_id"]:
         return
 
     password = (message.text or "").strip()
@@ -370,7 +385,7 @@ async def handle_password_reply(
     )
     if ok:
         await send_result(message, pending["name"], text)
-        PENDING_PASSWORD.pop(message.reply_to_message.message_id, None)
+        PENDING_PASSWORD.pop(pending_key, None)
         return
 
     if is_password_error(text):
@@ -382,7 +397,7 @@ async def handle_password_reply(
 
     logger.warning("Decode failed for %s: %s", pending["name"], text)
     await message.reply_text(f"Could not decode {pending['name']}:\n{text[:1000]}")
-    PENDING_PASSWORD.pop(message.reply_to_message.message_id, None)
+    PENDING_PASSWORD.pop(pending_key, None)
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:

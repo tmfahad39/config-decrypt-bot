@@ -18,6 +18,7 @@ jobs:
         id: guard
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           active=$(gh run list --workflow=bot.yml --status in_progress \
             --json databaseId \
