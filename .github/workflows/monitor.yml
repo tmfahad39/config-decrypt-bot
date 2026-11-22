@@ -18,6 +18,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          ALERT_CHAT_ID: ${{ vars.ALERT_CHAT_ID }}
         run: |
           runs=$(gh run list --workflow=bot.yml --limit 6 \
             --json databaseId,status,conclusion,createdAt,updatedAt)
@@ -67,4 +69,31 @@ jobs:
           - Last run: \`$last_id\` (conclusion: \`$conclusion\`, ended ${age_min}m ago)
 
           Check the run history: https://github.com/${{ github.repository }}/actions/workflows/bot.yml"
+            export ALERT_TEXT="🚨 Config decrypt bot may be down: $reason. Check https://github.com/$GH_REPO/actions/workflows/bot.yml"
+            python - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          payload = json.dumps({
+              "chat_id": os.environ["ALERT_CHAT_ID"],
+              "text": os.environ["ALERT_TEXT"],
+          }).encode()
+          request = urllib.request.Request(
+              "https://api.telegram.org/bot" + os.environ["BOT_TOKEN"] + "/sendMessage",
+              data=payload,
+              headers={"Content-Type": "application/json"},
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  result = json.load(response)
+              if not result.get("ok"):
+                  raise SystemExit("Telegram rejected the alert.")
+              print("Telegram alert sent.")
+          except urllib.error.HTTPError as error:
+              raise SystemExit(f"Telegram alert failed (HTTP {error.code}).") from None
+          except urllib.error.URLError:
+              raise SystemExit("Could not reach Telegram to send alert.") from None
+          PY
           fi
