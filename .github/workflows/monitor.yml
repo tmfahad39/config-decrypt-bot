@@ -1,0 +1,69 @@
+name: bot-monitor
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check bot health
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          runs=$(gh run list --workflow=bot.yml --limit 6 \
+            --json databaseId,status,conclusion,createdAt,updatedAt)
+
+          active=$(echo "$runs" | jq '[.[] | select(
+            .status == "in_progress" or .status == "queued" or
+            .status == "waiting" or .status == "pending" or
+            .status == "requested")] | length')
+
+          last=$(echo "$runs" | jq '.[0]')
+          last_id=$(echo "$last" | jq -r '.databaseId')
+          conclusion=$(echo "$last" | jq -r '.conclusion // "none"')
+          ended=$(echo "$last" | jq -r '.updatedAt // .createdAt')
+          age_min=$(( ( $(date +%s) - $(date -d "$ended" +%s) ) / 60 ))
+
+          recent_failures=$(echo "$runs" | jq '[.[] |
+            select(.status == "completed" and .conclusion == "failure")] | length')
+
+          echo "active_runs=$active last_run=$last_id conclusion=$conclusion ended=${age_min}m ago recent_failures=$recent_failures"
+
+          unhealthy=0
+          reason=""
+          if [ "$active" -eq 0 ] && [ "$age_min" -gt 12 ]; then
+            unhealthy=1
+            reason="no active run and the last run ended ${age_min}m ago (watchdog may be stuck)"
+          fi
+          if [ "$recent_failures" -ge 3 ]; then
+            unhealthy=1
+            reason="$recent_failures of the last runs failed (crashlooping)"
+          fi
+
+          if [ "$unhealthy" -eq 0 ]; then
+            echo "Bot is healthy."
+            exit 0
+          fi
+
+          echo "Bot looks down: $reason"
+          gh label create bot-down --color d93f0b \
+            --description "Config decrypt bot is unreachable" 2>/dev/null || true
+
+          open=$(gh issue list --state open --label bot-down --json number --jq 'length')
+          if [ "$open" -eq 0 ]; then
+            gh issue create --title "🚨 Config decrypt bot is down" --label bot-down \
+              --body "The monitor detected a problem.
+
+          - Reason: $reason
+          - Last run: \`$last_id\` (conclusion: \`$conclusion\`, ended ${age_min}m ago)
+
+          Check the run history: https://github.com/${{ github.repository }}/actions/workflows/bot.yml"
+          fi
