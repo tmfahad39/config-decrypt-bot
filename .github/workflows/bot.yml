@@ -14,16 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 355
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: pip
-
-      - run: pip install -r requirements.txt
-
       - name: Skip if another run is already active
+        id: guard
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -32,10 +24,25 @@ jobs:
             --jq "[.[] | select(.databaseId != ${{ github.run_id }})] | length")
           if [ "$active" -gt 0 ]; then
             echo "Bot is already running in another run; skipping."
-            exit 0
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - uses: actions/checkout@v4
+        if: steps.guard.outputs.skip == 'false'
+
+      - uses: actions/setup-python@v5
+        if: steps.guard.outputs.skip == 'false'
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+        if: steps.guard.outputs.skip == 'false'
+
       - name: Run bot
+        if: steps.guard.outputs.skip == 'false'
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           LOG_LEVEL: INFO
