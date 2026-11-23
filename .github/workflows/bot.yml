@@ -39,6 +39,8 @@ jobs:
           python-version: '3.12'
           cache: pip
 
+      - run: sudo apt-get update && sudo apt-get install -y argon2
+        if: steps.guard.outputs.skip == 'false'
       - run: pip install -r requirements.txt
         if: steps.guard.outputs.skip == 'false'
 

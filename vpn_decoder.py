@@ -494,7 +494,7 @@ def _ehi_derive_master_key(config):
 
 def _ehi_argon2_derive(password_bytes, salt_bytes, time_cost, memory_cost, parallelism):
     proc = _subprocess.run(
-        ["/data/data/com.termux/files/usr/bin/argon2", salt_bytes, "-id",
+        ["argon2", salt_bytes, "-id",
          "-t", str(time_cost), "-k", str(memory_cost), "-p", str(parallelism),
          "-l", "32", "-r", "-v", "13"],
         input=password_bytes,
