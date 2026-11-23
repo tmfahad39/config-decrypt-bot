@@ -750,9 +750,12 @@ async def verify_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     status = await is_member(context, user_id)
     if status is True:
         try:
-            await query.edit_message_text("Verified! You can now use the bot.")
+            await query.message.delete()
         except Exception:
-            pass
+            try:
+                await query.edit_message_text("Verified! You can now use the bot.")
+            except Exception:
+                pass
     else:
         try:
             await query.answer("You haven't joined yet.", show_alert=True)
