@@ -46,7 +46,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("config-decrypt-bot")
 
 DECODER = Path(__file__).with_name("vpn_decoder.py")
-SUPPORTED = {".hc", ".dark", ".ssc"}
+SUPPORTED = {".hc", ".dark", ".ssc", ".ehi"}
 MAX_FILE_BYTES = 5 * 1024 * 1024  # 5 MB
 REQUIRED_CHANNEL = "@ultimatedecryption"
 REQUIRED_CHANNEL_URL = "https://t.me/ultimatedecryption"

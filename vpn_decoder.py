@@ -265,8 +265,10 @@ def main():
                 result = decode_dark(data)
             elif kind == 'ssc':
                 result = decode_ssc(data)
+            elif kind == 'ehi':
+                result = decode_ehi(data)
             else:
-                raise ValueError(f'Unsupported format .{kind}; supported: .hc, .dark, .ssc')
+                raise ValueError(f'Unsupported format .{kind}; supported: .hc, .dark, .ssc, .ehi')
             output = json.dumps(result, ensure_ascii=False, indent=2, default=json_default)
             if args.stdout:
                 print(output)
@@ -287,6 +289,364 @@ def main():
             failed = True
             print(f'{path.name}: {type(exc).__name__}: {exc}', file=sys.stderr)
     return int(failed)
+
+
+
+import struct as _struct
+import base64 as _base64
+import hashlib as _hashlib
+import subprocess as _subprocess
+import re as _re
+
+
+def _ehi_parse_file_payload(file_bytes):
+    off = 0
+    l = int.from_bytes(file_bytes[off:off + 2], 'big')
+    off += 2 + l
+    off += 8
+    l = int.from_bytes(file_bytes[off:off + 2], 'big')
+    off += 2 + l
+    off += 8
+    plen = int.from_bytes(file_bytes[off:off + 4], 'big')
+    off += 4
+    off += 8
+    return file_bytes[off:off + plen]
+
+
+def _ehi_remove_pkcs7(data):
+    if not data:
+        return data
+    last = data[-1]
+    if 1 <= last <= 16 and data[-last:] == bytes([last]) * last:
+        return data[:-last]
+    return data
+
+
+def _ehi_aes_cbc_decrypt(ciphertext, key, iv):
+    from Crypto.Cipher import AES
+    cipher = AES.new(key, AES.MODE_CBC, iv=iv)
+    pt = cipher.decrypt(ciphertext)
+    return _ehi_remove_pkcs7(pt)
+
+
+def _ehi_decode_base64(s):
+    s = ''.join(s.split())
+    pad = (4 - len(s) % 4) % 4
+    return _base64.b64decode(s + '=' * pad)
+
+
+def _ehi_xxtea_decrypt(data, key):
+    n = len(data) // 4
+    if n < 2:
+        return data
+    v = list(_struct.unpack('<%dI' % n, data[:n * 4]))
+    keyb = (key.encode() if isinstance(key, str) else key).ljust(16, b'\x00')[:16]
+    k = list(_struct.unpack('<4I', keyb))
+    delta = 0x9E3779B9
+    q = 6 + 52 // n
+    s = (q * delta) & 0xFFFFFFFF
+    y = v[0]
+    for _ in range(q):
+        e = (s >> 2) & 3
+        for p in range(n - 1, -1, -1):
+            z = v[(p - 1 + n) % n]
+            mx = (((z >> 5) ^ (y << 2)) + ((y >> 3) ^ (z << 4))) ^ ((s ^ y) + (k[(p & 3) ^ e] ^ z))
+            y = v[p] = (v[p] - mx) & 0xFFFFFFFF
+        s = (s - delta) & 0xFFFFFFFF
+    out = _struct.pack('<%dI' % len(v), *v)
+    length_bytes = out[-4:]
+    decoded_length = _struct.unpack('<I', length_bytes)[0]
+    if 1 <= decoded_length <= len(out):
+        out = out[:decoded_length]
+    else:
+        idx = len(out)
+        while idx > 0 and out[idx - 1] == 0:
+            idx -= 1
+        out = out[:idx]
+    return out
+
+
+def _ehi_custom_b64_decode(s):
+    alpha = "RkLC2QaVMPYgGJW/A4f7qzDb9e+t6Hr0Zp8OlNyjuxKcTw1o5EIimhBn3UvdSFXs"
+    std = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    trans = str.maketrans(alpha, std)
+    clean = s.replace('?', '').replace(' ', '').replace('\n', '').replace('\r', '')
+    mapped = clean.translate(trans)
+    pad = (4 - len(mapped) % 4) % 4
+    return _base64.b64decode(mapped + '=' * pad)
+
+
+def _ehi_decrypt_xor_layer(encoded, key):
+    if not encoded or not encoded.strip():
+        return encoded
+    if not key:
+        return None
+    try:
+        reversed_text = encoded[::-1]
+        decoded = _ehi_custom_b64_decode(reversed_text)
+        hex_text = decoded.decode('latin1')
+        if len(hex_text) % 2 != 0:
+            hex_text = '0' + hex_text
+        ct = bytes.fromhex(hex_text)
+        keyb = key.encode()
+        pt = bytes(b ^ keyb[i % len(keyb)] for i, b in enumerate(ct))
+        pt = bytes(b for b in pt if b != 0)
+        return pt.decode('utf-8')
+    except Exception:
+        return None
+
+
+def _ehi_hchacha20(key, nonce16):
+    def rotl(x, n):
+        return ((x << n) | (x >> (32 - n))) & 0xFFFFFFFF
+
+    def qr(s, a, b, c, d):
+        s[a] = (s[a] + s[b]) & 0xFFFFFFFF
+        s[d] ^= s[a]
+        s[d] = rotl(s[d], 16)
+        s[c] = (s[c] + s[d]) & 0xFFFFFFFF
+        s[b] ^= s[c]
+        s[b] = rotl(s[b], 12)
+        s[a] = (s[a] + s[b]) & 0xFFFFFFFF
+        s[d] ^= s[a]
+        s[d] = rotl(s[d], 8)
+        s[c] = (s[c] + s[d]) & 0xFFFFFFFF
+        s[b] ^= s[c]
+        s[b] = rotl(s[b], 7)
+
+    constants = [0x61707865, 0x3320646e, 0x79622d32, 0x6b206574]
+    state = constants + list(_struct.unpack('<8I', key)) + list(_struct.unpack('<4I', nonce16))
+    for _ in range(10):
+        qr(state, 0, 4, 8, 12)
+        qr(state, 1, 5, 9, 13)
+        qr(state, 2, 6, 10, 14)
+        qr(state, 3, 7, 11, 15)
+        qr(state, 0, 5, 10, 15)
+        qr(state, 1, 6, 11, 12)
+        qr(state, 2, 7, 8, 13)
+        qr(state, 3, 4, 9, 14)
+    return _struct.pack('<8I', *state[0:4], *state[12:16])
+
+
+def _ehi_decode_message(encoded):
+    try:
+        raw = _base64.b64decode(encoded + '=' * (-len(encoded) % 4))
+    except Exception:
+        return encoded
+    text = raw.decode('utf-8', 'replace')
+    units = text.encode('utf-16-le')
+    key = b'EHIMSG'
+    out = bytearray()
+    for i in range(0, len(units), 2):
+        cu = _struct.unpack('<H', units[i:i + 2])[0]
+        ku = key[(i // 2) % len(key)]
+        out += _struct.pack('<H', cu ^ ku)
+    try:
+        return out.decode('utf-16-le')
+    except Exception:
+        return encoded
+
+
+def _ehi_derive_master_key(config):
+    import hashlib
+    optional = ["configAesKey", "configIdentifier", "configSalt"]
+    timestamps = ["configTimestamp", "configExpiryTimestamp"]
+    lock_fields = ["lockModes", "lockModesHash", "configHwid", "configLockMobileOperatorId"]
+
+    def has_content(v):
+        if v is None:
+            return False
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return v != 0
+        if isinstance(v, str):
+            return v != ""
+        if isinstance(v, (list, dict)):
+            return len(v) != 0
+        return True
+
+    def to_material(v):
+        if v is None:
+            return "None"
+        if isinstance(v, bool):
+            return "True" if v else "False"
+        if isinstance(v, str):
+            return v
+        if isinstance(v, (int, float)):
+            return str(v)
+        return str(v)
+
+    material = ""
+    for f in optional:
+        if f in config and has_content(config.get(f)):
+            material += to_material(config.get(f))
+    for f in timestamps:
+        if f in config:
+            material += to_material(config.get(f))
+        else:
+            material += "0"
+    for f in lock_fields:
+        if f in config and has_content(config.get(f)):
+            material += to_material(config.get(f))
+    return hashlib.sha256(material.encode()).digest()
+
+
+def _ehi_argon2_derive(password_bytes, salt_bytes, time_cost, memory_cost, parallelism):
+    proc = _subprocess.run(
+        ["/data/data/com.termux/files/usr/bin/argon2", salt_bytes, "-id",
+         "-t", str(time_cost), "-k", str(memory_cost), "-p", str(parallelism),
+         "-l", "32", "-r", "-v", "13"],
+        input=password_bytes,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.decode(errors='replace'))
+    return bytes.fromhex(proc.stdout.decode().strip())
+
+
+def _ehi_decrypt_locked(config):
+    salt = config.get("configSalt", "EVZJNI")
+    encoded_data = config.get("configData")
+    xor_data = _ehi_decrypt_xor_layer(encoded_data, salt)
+    if xor_data is None:
+        raise ValueError("XOR layer failed")
+    raw_payload = _base64.b64decode(xor_data + '=' * (-len(xor_data) % 4))
+    time_cost = _struct.unpack('<I', raw_payload[1:5])[0]
+    memory_cost = _struct.unpack('<I', raw_payload[5:9])[0]
+    parallelism = raw_payload[9]
+    salt_bytes = raw_payload[0x0a:0x1a]
+    nonce = raw_payload[0x1a:0x32]
+    assoc = raw_payload[:0x1a]
+    ciphertext = raw_payload[0x32:]
+    master_key = _ehi_derive_master_key(config)
+    enc_key = _ehi_argon2_derive(master_key, salt_bytes, time_cost, memory_cost, parallelism)
+    subkey = _ehi_hchacha20(enc_key, nonce[:16])
+    ietf_nonce = b'\x00' * 4 + nonce[16:]
+    from Crypto.Cipher import ChaCha20_Poly1305
+    cipher = ChaCha20_Poly1305.new(key=subkey, nonce=ietf_nonce)
+    cipher.update(assoc)
+    tag = ciphertext[-16:]
+    ct = ciphertext[:-16]
+    pt = cipher.decrypt_and_verify(ct, tag)
+    cfg_json = json.loads(pt.decode('utf-8'))
+    # clean
+    cleaned = {}
+    for field, value in cfg_json.items():
+        if isinstance(value, str) and value.strip():
+            if field == "configMessage":
+                cleaned[field] = _ehi_decode_message(value)
+            else:
+                dec = _ehi_decrypt_xor_layer(value, salt)
+                cleaned[field] = dec if dec is not None else value
+        else:
+            cleaned[field] = value
+    # embedded json
+    for field in ("v2rRawJson", "overwriteServerData"):
+        if field in cleaned and isinstance(cleaned[field], str):
+            raw = cleaned[field]
+            start = raw.find('{')
+            end = raw.rfind('}')
+            if start >= 0 and end > start:
+                try:
+                    cleaned[field] = json.loads(raw[start:end + 1])
+                except Exception:
+                    pass
+    # redact? keep secrets visible
+    cleaned["protocol"] = "EHI"
+    return cleaned
+
+
+def decode_ehi(data):
+    payload = _ehi_parse_file_payload(data)
+    if not payload:
+        raise ValueError("Invalid EHI file")
+    # outer container
+    L1_KEY = bytes.fromhex("7e1210f7aab956f7a668bda6e57feddb7f84ad840aef8d27b1b969959be3ab6c")
+    L2_KEY = bytes.fromhex("b2bc617c32d8b9eb1943a5ffa8051eea")
+    XXTEA_KEY = "null=V5kU5+FFrY\0"
+    OUTER_IVS = [
+        bytes.fromhex("221d572349555f1d112133236b1f4a3f"),
+        bytes.fromhex("5543494c53443e3f4a6a4539384e776a"),
+        bytes.fromhex("374c2541575e4d531a3c327b75431e5f"),
+        bytes.fromhex("2c5d1147bbad422b3b334d4d235f1a53"),
+        bytes.fromhex("522b01433a5e8b2fc7549e1ad368e541"),
+        bytes.fromhex("337a1035aaedf3458ca167e92d74b839"),
+    ]
+
+    def _aes_cbc(ct, key, iv):
+        return _ehi_remove_pkcs7(_ehi_aes_cbc_decrypt(ct, key, iv)) if False else _ehi_aes_cbc_decrypt(ct, key, iv)
+
+    outer_config = None
+    mode = None
+    for iv in OUTER_IVS:
+        try:
+            first = _ehi_aes_cbc_decrypt(payload, L1_KEY, iv)
+            first_text = first.decode('utf-8')
+        except Exception:
+            continue
+        parts = first_text.split(':')
+        if len(parts) < 3:
+            continue
+        inner_iv_text, inner_ct_text = parts[0], parts[2]
+        try:
+            inner_iv = _ehi_decode_base64(inner_iv_text)
+            inner_ct = _ehi_decode_base64(inner_ct_text)
+        except Exception:
+            continue
+        if len(inner_iv) != 16:
+            continue
+        try:
+            second = _ehi_aes_cbc_decrypt(inner_ct, L2_KEY, inner_iv)
+            final = _ehi_xxtea_decrypt(second, XXTEA_KEY)
+            idx = final.find(b'{')
+            if idx < 0:
+                continue
+            val = json.loads(final[idx:])
+            if isinstance(val, dict) and val:
+                outer_config = val
+                # determine mode by iv index? locked if iv in last three
+                if iv in OUTER_IVS[3:]:
+                    mode = "locked"
+                else:
+                    mode = "bypass"
+                break
+        except Exception:
+            continue
+    if outer_config is None:
+        raise ValueError("Could not decrypt EHI outer container")
+
+    if mode == "locked":
+        result = _ehi_decrypt_locked(outer_config)
+    else:
+        # bypass: clean fields
+        salt = outer_config.get("configSalt", "EVZJNI")
+        cleaned = {}
+        for field, value in outer_config.items():
+            if isinstance(value, str) and value.strip():
+                if field == "configMessage":
+                    cleaned[field] = _ehi_decode_message(value)
+                else:
+                    dec = _ehi_decrypt_xor_layer(value, salt)
+                    cleaned[field] = dec if dec is not None else value
+            else:
+                cleaned[field] = value
+        for field in ("v2rRawJson", "overwriteServerData"):
+            if field in cleaned and isinstance(cleaned[field], str):
+                raw = cleaned[field]
+                start = raw.find('{')
+                end = raw.rfind('}')
+                if start >= 0 and end > start:
+                    try:
+                        cleaned[field] = json.loads(raw[start:end + 1])
+                    except Exception:
+                        pass
+        cleaned["protocol"] = "EHI"
+        result = cleaned
+    # ensure protocol
+    if isinstance(result, dict):
+        result.setdefault("protocol", "EHI")
+    return result
 
 
 if __name__ == '__main__':
