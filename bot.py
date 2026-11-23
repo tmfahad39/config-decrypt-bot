@@ -462,14 +462,14 @@ def _copy_rows(pairs):
 
 
 def _ssh_block(cfg, stem):
-    user = _get(cfg, "username", "USERNAME", "user", "User")
-    password = _get(cfg, "password", "PASSWORD", "pass", "Pass")
-    host = _get(cfg, "host", "HOST", "SNI_OR_HOST", "serverAddress", "server", "Server")
-    port = _get(cfg, "port", "PORT", "sshPort", "SSH_PORT")
-    ns = _get(cfg, "ns", "NS_SERVER")
-    dns = _get(cfg, "dns", "DNS")
-    pubkey = _get(cfg, "pubKey", "PUBKEY")
-    mode = _get(cfg, "mode", "MODE")
+    user = _get(cfg, "username", "USERNAME", "user", "User", "Username")
+    password = _get(cfg, "password", "PASSWORD", "pass", "Pass", "Password")
+    host = _get(cfg, "host", "HOST", "Host", "SNI_OR_HOST", "serverAddress", "server", "Server")
+    port = _get(cfg, "port", "PORT", "Port", "sshPort", "SSH_PORT")
+    ns = _get(cfg, "ns", "NS", "NS_SERVER", "nsServer", "slowDnsNs", "slowDnsNS")
+    dns = _get(cfg, "dns", "DNS", "Dns", "dnsResolver", "slowDnsDns", "slowDnsDNS")
+    pubkey = _get(cfg, "pubKey", "PUBKEY", "PubKey", "publicKey", "slowDnsPubKey", "slowDnsPUBKEY")
+    mode = _get(cfg, "mode", "MODE", "Mode")
     link_user = str(user).lstrip("@")
     link = f"{host}:{port}@{link_user}:{password}"
 
@@ -534,7 +534,7 @@ def _proxy_block(cfg, stem):
     proxy = _get(cfg, "proxy", "PROXY", default="")
     payload = _get(cfg, "payload", "PAYLOAD", "Payload", default="")
     uuid = _get(cfg, "uuid", "UUID", "id", "ID", "userId", "user_id")
-    password = _get(cfg, "password", "PASSWORD", "pass", "Pass")
+    password = _get(cfg, "password", "PASSWORD", "pass", "Pass", "Password")
     path = _get(cfg, "path", "PATH", "Path", "wsPath", "ws_path")
     port = _get(cfg, "port", "PORT", "Port")
     tls_raw = str(_get(cfg, "tls", "TLS", "ssl", "SSL", default="")).strip().lower()
@@ -548,7 +548,7 @@ def _proxy_block(cfg, stem):
     ns = _get(cfg, "ns", "NS_SERVER", "nsServer", "slowDnsNs", "slowDnsNS", "NS")
     dns = _get(cfg, "dns", "DNS", "dnsResolver", "slowDnsDns", "slowDnsDNS")
     pubkey = _get(cfg, "pubKey", "PUBKEY", "publicKey", "slowDnsPubKey", "slowDnsPUBKEY")
-    mode = _get(cfg, "mode", "MODE")
+    mode = _get(cfg, "mode", "MODE", "Mode")
     proto = str(_get(cfg, "protocol", "PROTOCOL", "type", "TYPE", default="")).upper()
     if not proto or proto in ("SSH", "1", ""):
         if uuid and not password:
@@ -706,9 +706,9 @@ def format_result(result, stem):
     profiles = _profiles(data)
     for cfg in profiles[:1]:
         proto = str(_get(cfg, "protocol", "PROTOCOL", "type", "TYPE", default="")).upper()
-        user = _get(cfg, "username", "USERNAME", "user", "User")
-        password = _get(cfg, "password", "PASSWORD", "pass", "Pass")
-        host = _get(cfg, "host", "HOST", "SNI_OR_HOST", "serverAddress", "server", "Server")
+        user = _get(cfg, "username", "USERNAME", "user", "User", "Username")
+        password = _get(cfg, "password", "PASSWORD", "pass", "Pass", "Password")
+        host = _get(cfg, "host", "HOST", "Host", "SNI_OR_HOST", "serverAddress", "server", "Server")
 
         is_proxy = (
             proto in ("VLESS", "VMESS", "TROJAN")
