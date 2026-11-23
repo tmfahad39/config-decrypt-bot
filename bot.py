@@ -32,6 +32,7 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    CallbackQueryHandler,
     filters,
 )
 
@@ -47,6 +48,8 @@ logger = logging.getLogger("config-decrypt-bot")
 DECODER = Path(__file__).with_name("vpn_decoder.py")
 SUPPORTED = {".hc", ".dark", ".ssc"}
 MAX_FILE_BYTES = 5 * 1024 * 1024  # 5 MB
+REQUIRED_CHANNEL = "@ultimatedecryption"
+REQUIRED_CHANNEL_URL = "https://t.me/ultimatedecryption"
 DECODE_TIMEOUT = 30  # seconds
 
 # (chat id, prompt message id) -> pending file and uploader
@@ -63,6 +66,35 @@ def is_password_error(text: str) -> bool:
         return True
     return "provide" in lowered and "password" in lowered
 
+
+
+
+async def is_member(context, user_id):
+    try:
+        member = await context.bot.get_chat_member(REQUIRED_CHANNEL, user_id)
+        return member.status in ("member", "administrator", "creator", "restricted")
+    except Exception as exc:
+        logger.warning("Could not verify membership for %s: %s", user_id, exc)
+        return None
+
+
+def join_gate_markup():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Join Channel", url=REQUIRED_CHANNEL_URL)],
+            [InlineKeyboardButton("Verify", callback_data="verify_join")],
+        ]
+    )
+
+
+async def send_join_gate(message):
+    await message.reply_text(
+        "Please join our channel to use this bot:\n"
+        f"{REQUIRED_CHANNEL_URL}\n\n"
+        "After joining, click Verify.",
+        reply_markup=join_gate_markup(),
+        do_quote=message.chat.type in ("group", "supergroup"),
+    )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
@@ -605,6 +637,12 @@ async def decode_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     document = message.document
     if document is None:
         return
+    user_id = message.from_user.id if message.from_user else None
+    if user_id is not None:
+        status = await is_member(context, user_id)
+        if status is not True:
+            await send_join_gate(message)
+            return
 
     name = document.file_name or "config"
     suffix = Path(name).suffix.lower()
@@ -666,6 +704,11 @@ async def handle_password_reply(
         return
     if message.from_user is None or message.from_user.id != pending["user_id"]:
         return
+    if message.from_user is not None:
+        status = await is_member(context, message.from_user.id)
+        if status is not True:
+            await send_join_gate(message)
+            return
 
     password = (message.text or "").strip()
     if not password:
@@ -693,6 +736,28 @@ async def handle_password_reply(
     logger.warning("Decode failed for %s: %s", pending["name"], text)
     await message.reply_text(f"Could not decode {pending['name']}:\n{text[:1000]}")
     PENDING_PASSWORD.pop(pending_key, None)
+
+
+
+async def verify_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query is None:
+        return
+    await query.answer()
+    user_id = query.from_user.id if query.from_user else None
+    if user_id is None:
+        return
+    status = await is_member(context, user_id)
+    if status is True:
+        try:
+            await query.edit_message_text("Verified! You can now use the bot.")
+        except Exception:
+            pass
+    else:
+        try:
+            await query.answer("You haven't joined yet.", show_alert=True)
+        except Exception:
+            pass
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
