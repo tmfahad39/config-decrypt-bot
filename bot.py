@@ -789,6 +789,7 @@ def main() -> None:
     application.add_handler(
         MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, handle_password_reply)
     )
+    application.add_handler(CallbackQueryHandler(verify_join, pattern="^verify_join$"))
     application.add_error_handler(on_error)
 
     logger.info("Starting config-decrypt bot with long polling")
