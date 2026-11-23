@@ -483,12 +483,26 @@ def _ssh_block(cfg, stem):
         f"\U0001f50c SSH PORT        : {value(port)}",
         f"\U0001f464 SSH USER        : {value(user)}",
         f"\U0001f511 SSH PASS        : {value(password)}",
-        f"\U0001f310 DNS SERVER NAME : {value(ns)}",
-        f"\U0001f30d DNS RESOLVER    : {value(dns)}",
-        f"\U0001f510 DNS PUBLIC KEY  : {value(pubkey)}",
     ]
-    if str(mode).strip():
+    inject = _get(cfg, "inject", "INJECT", "Mode", "mode", default="")
+    proxy = _get(cfg, "proxy", "PROXY", default="")
+    if str(inject).strip():
+        detail_lines.append(f"\U0001f9e9 INJECT  : {value(inject)}")
+    if str(proxy).strip():
+        detail_lines.append(f"\U0001f9ed PROXY   : {value(proxy)}")
+    if str(ns).strip():
+        detail_lines.append(f"\U0001f310 DNS SERVER NAME : {value(ns)}")
+    if str(dns).strip():
+        detail_lines.append(f"\U0001f30d DNS RESOLVER    : {value(dns)}")
+    if str(pubkey).strip():
+        detail_lines.append(f"\U0001f510 DNS PUBLIC KEY  : {value(pubkey)}")
+    if str(mode).strip() and str(mode).strip() != str(inject).strip():
         detail_lines.append(f"\U0001f9e9 MODE            : {value(mode)}")
+    payload = _get(cfg, "payload", "PAYLOAD", "Payload", default="")
+    if str(payload).strip():
+        detail_lines.append("")
+        detail_lines.append("\U0001f4e6 PAYLOAD:")
+        detail_lines.append(value(payload))
     details = "\n".join(detail_lines)
     body = "\n".join(
         [
