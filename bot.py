@@ -16,6 +16,7 @@ import re
 from pathlib import Path
 import sys
 import tempfile
+from urllib.parse import quote
 
 from telegram import (
     CopyTextButton,
@@ -330,6 +331,142 @@ def _ssh_block(cfg, stem):
     return body, link, pairs
 
 
+def _proxy_block(cfg, stem):
+    address = _get(cfg, "address", "ADDRESS", "add", "host", "HOST", "serverAddress", "server", "Server", "ip", "IP")
+    uuid = _get(cfg, "uuid", "UUID", "id", "ID", "userId", "user_id")
+    password = _get(cfg, "password", "PASSWORD", "pass", "Pass")
+    path = _get(cfg, "path", "PATH", "Path", "wsPath", "ws_path")
+    port = _get(cfg, "port", "PORT", "Port")
+    tls_raw = str(_get(cfg, "tls", "TLS", "ssl", "SSL", default="")).strip().lower()
+    tls_on = tls_raw in ("1", "true", "tls", "on", "yes", "ssl")
+    tls_text = "ON \u2705" if tls_on else "OFF \u274c"
+    transport = _get(cfg, "transport", "TRANSPORT", "net", "NET", "network", "type", "TYPE")
+    alter_id = _get(cfg, "alterId", "ALTER_ID", "alter_id", "aid", "AID", default="0")
+    security = _get(cfg, "security", "SECURITY", "encryption", "ENC", default="none")
+    inject = _get(cfg, "inject", "INJECT", "injectMode", "InjectMode", default="0")
+    ns = _get(cfg, "ns", "NS_SERVER", "nsServer")
+    dns = _get(cfg, "dns", "DNS", "dnsResolver")
+    pubkey = _get(cfg, "pubKey", "PUBKEY", "publicKey")
+    mode = _get(cfg, "mode", "MODE")
+    proto = str(_get(cfg, "protocol", "PROTOCOL", "type", "TYPE", default="")).upper()
+    if not proto or proto in ("SSH", "1", ""):
+        if uuid and not password:
+            proto = "VLESS"
+        elif password and not uuid:
+            proto = "TROJAN"
+        else:
+            proto = "VMESS"
+
+    def value(text):
+        return f"<code>{html.escape(_clean(text))}</code>"
+
+    detail_lines = [
+        f"\U0001f6a8 NAME: {html.escape(_clean(stem))}",
+        "",
+        f"\U0001f4cd ADDRESS : {value(address)}",
+    ]
+    if uuid:
+        detail_lines.append(f"\U0001f511 UUID    : {value(uuid)}")
+    if password and not uuid:
+        detail_lines.append(f"\U0001f511 PASSWORD: {value(password)}")
+    detail_lines.append(f"\U0001f4c1 PATH    : {value(path)}")
+    detail_lines.append(f"\U0001f50c PORT    : {value(port)}")
+    detail_lines.append(f"\U0001f6e1 TLS     : {value(tls_text)}")
+    detail_lines.append(f"\U0001f6a6 TRANSPORT: {value(transport)}")
+    detail_lines.append(f"\U0001f522 ALTER ID: {value(alter_id)}")
+    detail_lines.append(f"\U0001f512 SECURITY: {value(security)}")
+    detail_lines.append(f"\U0001f9e9 INJECT  : {value(inject)}")
+    if ns:
+        detail_lines.append(f"\U0001f310 DNS SERVER NAME : {value(ns)}")
+    if dns:
+        detail_lines.append(f"\U0001f30d DNS RESOLVER    : {value(dns)}")
+    if pubkey:
+        detail_lines.append(f"\U0001f510 DNS PUBLIC KEY  : {value(pubkey)}")
+    if str(mode).strip():
+        detail_lines.append(f"\U0001f9e9 MODE            : {value(mode)}")
+    details = "\n".join(detail_lines)
+
+    # Build ready link
+    name_q = quote(stem, safe="")
+    addr_q = quote(str(address), safe="")
+    path_q = quote(str(path), safe="") if path else ""
+    if proto == "VMESS":
+        import base64 as _b64, json as _json
+        vmess_obj = {
+            "v": "2",
+            "ps": stem,
+            "add": str(address),
+            "port": str(port),
+            "id": str(uuid),
+            "aid": str(alter_id or 0),
+            "net": str(transport or "tcp"),
+            "type": str(security or "none"),
+            "host": "",
+            "path": str(path or ""),
+            "tls": "tls" if tls_on else "",
+        }
+        link = "vmess://" + _b64.b64encode(_json.dumps(vmess_obj).encode()).decode()
+    elif proto == "TROJAN":
+        params = []
+        if transport:
+            params.append("type=" + quote(str(transport), safe=""))
+        if security:
+            params.append("security=" + quote(str(security), safe=""))
+        if path:
+            params.append("path=" + quote(str(path), safe=""))
+        query = "&".join(params)
+        link = f"trojan://{password}@{address}:{port}"
+        if query:
+            link += "?" + query
+        link += "#" + addr_q
+    else:
+        params = []
+        if transport:
+            params.append("type=" + quote(str(transport), safe=""))
+        sec = security if security and security.lower() != "none" else ("tls" if tls_on else "none")
+        params.append("security=" + quote(str(sec), safe=""))
+        if path:
+            params.append("path=" + quote(str(path), safe=""))
+        query = "&".join(params)
+        link = f"vless://{uuid}@{address}:{port}"
+        if query:
+            link += "?" + query
+        link += "#" + addr_q
+
+    body = "\n".join(
+        [
+            f"<blockquote>{details}</blockquote>",
+            "",
+            SEPARATOR,
+            "\U0001f517 READY LINK:",
+            SEPARATOR,
+            "",
+            f"<code>{html.escape(link)}</code>",
+        ]
+    )
+    pairs = [
+        ("ADDRESS", address),
+    ]
+    if uuid:
+        pairs.append(("UUID", uuid))
+    if password and not uuid:
+        pairs.append(("PASSWORD", password))
+    pairs += [
+        ("PATH", path),
+        ("PORT", port),
+        ("TLS", tls_text),
+        ("TRANSPORT", transport),
+        ("ALTER_ID", alter_id),
+        ("SECURITY", security),
+        ("INJECT", inject),
+        ("NS", ns),
+        ("DNS", dns),
+        ("PUBKEY", pubkey),
+        ("LINK", link),
+        ("CODE", link),
+    ]
+    return body, link, [p for p in pairs if str(p[1]).strip()]
+
 def _title(cfg, stem, proto):
     blob = " ".join(
         str(cfg.get(key, "")) for key in ("methods", "TUNNEL_TYPE", "tunnel", "protocol")
@@ -359,7 +496,14 @@ def format_result(result, stem):
         password = _get(cfg, "password", "PASSWORD", "pass", "Pass")
         host = _get(cfg, "host", "HOST", "SNI_OR_HOST", "serverAddress", "server", "Server")
 
-        if user and password and host:
+        is_proxy = (
+            proto in ("VLESS", "VMESS", "TROJAN")
+            or (_get(cfg, "uuid", "UUID", "id", "ID") and (_get(cfg, "transport", "TRANSPORT", "net", "NET", "network") or _get(cfg, "path", "PATH", "Path")))
+            or (_get(cfg, "password", "PASSWORD", "pass", "Pass") and _get(cfg, "address", "ADDRESS", "add", "host", "HOST") and _get(cfg, "transport", "TRANSPORT", "net", "NET", "network"))
+        )
+        if is_proxy:
+            body, _, pairs = _proxy_block(cfg, stem)
+        elif user and password and host:
             body, _, pairs = _ssh_block(cfg, stem)
         else:
             fields, pairs = _scalar_fields(cfg)
