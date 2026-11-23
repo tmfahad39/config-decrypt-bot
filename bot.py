@@ -78,6 +78,12 @@ async def is_member(context, user_id):
         return None
 
 
+def join_group_markup():
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("Join Group", url=REQUIRED_CHANNEL_URL)]]
+    )
+
+
 def join_gate_markup():
     return InlineKeyboardMarkup(
         [
@@ -100,7 +106,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
         "Send me a VPN config file (.hc, .dark or .ssc) and I'll send back "
         "the decoded details.\n\nIf a file is password protected I'll ask you "
-        "for the password in a reply.\n\nUse /help for details."
+        "for the password in a reply.\n\nUse /help for details.",
+        reply_markup=join_group_markup(),
     )
 
 
@@ -118,6 +125,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/start - introduction\n"
         "/help  - this message\n\n"
         "Only decode configs you own or are authorized to handle.",
+        reply_markup=join_group_markup(),
     )
 
 
@@ -624,7 +632,7 @@ def format_result(result, stem):
 
 async def send_result(message, name: str, result: str, reply_to_message_id=None) -> None:
     text, pairs = format_result(result, Path(name).stem)
-    kwargs = dict(parse_mode=ParseMode.HTML)
+    kwargs = dict(parse_mode=ParseMode.HTML, reply_markup=join_group_markup())
     if reply_to_message_id is not None:
         kwargs["reply_to_message_id"] = reply_to_message_id
     else:
@@ -651,12 +659,13 @@ async def decode_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
         await message.reply_text(
             f"Unsupported file type: {suffix or '(none)'}. "
-            "Send a .hc, .dark or .ssc file."
+            "Send a .hc, .dark or .ssc file.",
+            reply_markup=join_group_markup(),
         )
         return
 
     if document.file_size and document.file_size > MAX_FILE_BYTES:
-        await message.reply_text("That file is too large (limit: 5 MB).")
+        await message.reply_text("That file is too large (limit: 5 MB).", reply_markup=join_group_markup())
         return
 
     await message.reply_chat_action(ChatAction.UPLOAD_DOCUMENT)
@@ -665,7 +674,7 @@ async def decode_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         data = bytes(await telegram_file.download_as_bytearray())
     except Exception as exc:
         logger.exception("Could not download %s", name)
-        await message.reply_text(f"Could not download the file: {exc}")
+        await message.reply_text(f"Could not download the file: {exc}", reply_markup=join_group_markup())
         return
 
     ok, text = await run_decoder(data, name)
@@ -689,7 +698,7 @@ async def decode_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     logger.warning("Decode failed for %s: %s", name, text)
-    await message.reply_text(f"Could not decode {name}:\n{text[:1000]}")
+    await message.reply_text(f"Could not decode {name}:\n{text[:1000]}", reply_markup=join_group_markup())
 
 
 async def handle_password_reply(
@@ -730,6 +739,7 @@ async def handle_password_reply(
         await message.reply_text(
             f"\U0001f512 Wrong password: {html.escape(pending['name'])}\n\nReply with password.",
             reply_to_message_id=message.reply_to_message.message_id,
+            reply_markup=join_group_markup(),
         )
         return
 
