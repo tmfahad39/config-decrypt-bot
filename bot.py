@@ -385,7 +385,7 @@ def _ssh_block(cfg, stem):
             "\U0001f510 SSH READY LINK:",
             SEPARATOR,
             "",
-            f"<code>{html.escape(link)}</code>",
+            f"<pre><code>{html.escape(link)}</code></pre>",
         ]
     )
     pairs = [
@@ -511,7 +511,7 @@ def _proxy_block(cfg, stem):
             "\U0001f517 READY LINK:",
             SEPARATOR,
             "",
-            f"<code>{html.escape(link)}</code>",
+            f"<pre><code>{html.escape(link)}</code></pre>",
         ]
     )
     pairs = [
