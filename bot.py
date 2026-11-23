@@ -655,6 +655,12 @@ async def decode_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     name = document.file_name or "config"
     suffix = Path(name).suffix.lower()
     if suffix not in SUPPORTED:
+        lowered = name.lower()
+        for cand in SUPPORTED:
+            if cand in lowered:
+                suffix = cand
+                break
+    if suffix not in SUPPORTED:
         if message.chat.type in ("group", "supergroup"):
             return
         await message.reply_text(
