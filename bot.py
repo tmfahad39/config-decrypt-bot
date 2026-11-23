@@ -220,6 +220,7 @@ def _ssh_block(cfg, stem):
     detail_lines = [
         f"\U0001f6a8 NAME: {html.escape(_clean(stem))}",
         "",
+        f"\U0001f310 SSH HOST        : {value(host)}",
         f"\U0001f50c SSH PORT        : {value(port)}",
         f"\U0001f464 SSH USER        : {value(user)}",
         f"\U0001f511 SSH PASS        : {value(password)}",
@@ -299,14 +300,16 @@ def format_result(result, stem):
     return "\n\n".join(blocks)[:4000], [p for p in pairs if str(p[1]).strip()]
 
 
-async def send_result(message, name: str, result: str) -> None:
+async def send_result(message, name: str, result: str, reply_to_message_id=None) -> None:
     text, pairs = format_result(result, Path(name).stem)
     rows = _copy_rows(pairs)
     markup = InlineKeyboardMarkup(rows) if rows else None
-    await message.reply_text(
-        text, parse_mode=ParseMode.HTML, reply_markup=markup,
-        do_quote=message.chat.type in ("group", "supergroup"),
-    )
+    kwargs = dict(parse_mode=ParseMode.HTML, reply_markup=markup)
+    if reply_to_message_id is not None:
+        kwargs["reply_to_message_id"] = reply_to_message_id
+    else:
+        kwargs["do_quote"] = message.chat.type in ("group", "supergroup")
+    await message.reply_text(text, **kwargs)
 
 
 async def decode_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -341,12 +344,12 @@ async def decode_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     ok, text = await run_decoder(data, name)
     if ok:
-        await send_result(message, name, text)
+        await send_result(message, name, text, reply_to_message_id=message.message_id)
         return
 
     if is_password_error(text):
         prompt = await message.reply_text(
-            "\U0001f512 Password Protected\n\nReply with password.",
+            f"\U0001f512 Password Protected: {html.escape(name)}\n\nReply with password.",
             reply_markup=ForceReply(selective=True),
             do_quote=True,
         )
@@ -355,6 +358,7 @@ async def decode_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "user_id": message.from_user.id if message.from_user else None,
             "name": name,
             "data": data,
+            "message_id": message.message_id,
         }
         return
 
@@ -384,13 +388,16 @@ async def handle_password_reply(
         pending["data"], pending["name"], password=password
     )
     if ok:
-        await send_result(message, pending["name"], text)
+        await send_result(
+            message, pending["name"], text,
+            reply_to_message_id=pending.get("message_id"),
+        )
         PENDING_PASSWORD.pop(pending_key, None)
         return
 
     if is_password_error(text):
         await message.reply_text(
-            "\U0001f512 Wrong password.\n\nReply with password.",
+            f"\U0001f512 Wrong password: {html.escape(pending['name'])}\n\nReply with password.",
             reply_to_message_id=message.reply_to_message.message_id,
         )
         return
