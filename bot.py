@@ -142,25 +142,94 @@ def _get(cfg, *keys, default=""):
     return default
 
 
+def _flatten_outbound(profile):
+    if not isinstance(profile, dict):
+        return profile
+    outbounds = profile.get("outbounds")
+    if not (isinstance(outbounds, list) and outbounds and isinstance(outbounds[0], dict)):
+        return profile
+    ob = outbounds[0]
+    protocol = ob.get("protocol")
+    if protocol:
+        profile["protocol"] = str(protocol)
+    settings = ob.get("settings")
+    if isinstance(settings, dict):
+        for key, value in settings.items():
+            if isinstance(value, (dict, list)) or value in (None, ""):
+                continue
+            profile.setdefault(key, value)
+    stream = ob.get("streamSettings")
+    if isinstance(stream, dict):
+        net = stream.get("network")
+        if net not in (None, ""):
+            profile.setdefault("transport", net)
+            profile.setdefault("net", net)
+        sec = stream.get("security")
+        if sec not in (None, ""):
+            profile.setdefault("tls", sec)
+        for key in ("wsSettings", "tcpSettings", "kcpSettings", "grpcSettings", "httpSettings", "h2Settings"):
+            st = stream.get(key)
+            if isinstance(st, dict):
+                if st.get("path") not in (None, ""):
+                    profile.setdefault("path", st.get("path"))
+                if isinstance(st.get("host"), list) and st.get("host"):
+                    profile.setdefault("host_header", st.get("host")[0])
+                elif st.get("host") not in (None, ""):
+                    profile.setdefault("host_header", st.get("host"))
+        tls_settings = stream.get("tlsSettings")
+        if isinstance(tls_settings, dict):
+            sni = tls_settings.get("serverName")
+            if sni not in (None, ""):
+                profile.setdefault("sni", sni)
+                profile.setdefault("host", profile.get("host", sni))
+        for key in ("rawSettings", "tcpSettings"):
+            st = stream.get(key)
+            if isinstance(st, dict):
+                header = st.get("header")
+                if isinstance(header, dict) and header.get("type") not in (None, ""):
+                    profile.setdefault("headerType", header.get("type"))
+    return profile
+
+
 def _profiles(data):
     if isinstance(data, dict):
         for key in ("config", "CONFIGS"):
             value = data.get(key)
             if isinstance(value, list) and value:
-                return [item for item in value if isinstance(item, dict)] or [data]
-        ssh = data.get("SshConfig")
-        if isinstance(ssh, dict):
-            profile = dict(ssh)
-            for section in ("meta", "V2RayConfig"):
-                extra = data.get(section)
-                if isinstance(extra, dict):
-                    for key, value in extra.items():
-                        if not isinstance(value, (dict, list)) and value not in (None, ""):
-                            profile.setdefault(key, value)
-            return [profile]
-        return [data]
+                return [_flatten_outbound(item) if isinstance(item, dict) else item for item in value if isinstance(item, dict)] or [_flatten_outbound(data)]
+        sections = []
+        for sec in ("meta", "InjectConfig", "SshConfig", "V2RayConfig"):
+            val = data.get(sec)
+            if isinstance(val, dict):
+                sections.append(val)
+        if sections:
+            profile = {}
+            for sec in sections:
+                for key, value in sec.items():
+                    if isinstance(value, (dict, list)):
+                        if str(key).lower() == "config":
+                            cfgval = value
+                            if isinstance(cfgval, str):
+                                try:
+                                    cfgval = json.loads(cfgval)
+                                except Exception:
+                                    cfgval = None
+                            if isinstance(cfgval, dict):
+                                for k, v in cfgval.items():
+                                    if not isinstance(v, (dict, list)) and v not in (None, ""):
+                                        profile.setdefault(k, v)
+                    elif value not in (None, ""):
+                        profile.setdefault(key, value)
+            for key, value in data.items():
+                if key in ("meta", "InjectConfig", "SshConfig", "V2RayConfig"):
+                    continue
+                if not isinstance(value, (dict, list)) and value not in (None, ""):
+                    profile.setdefault(key, value)
+            if profile:
+                return [_flatten_outbound(profile)]
+        return [_flatten_outbound(data)]
     if isinstance(data, list):
-        return [item for item in data if isinstance(item, dict)] or [{"value": data}]
+        return [_flatten_outbound(item) if isinstance(item, dict) else item for item in data if isinstance(item, dict)] or [_flatten_outbound({"value": data})]
     return [{"value": data}]
 
 
@@ -344,9 +413,9 @@ def _proxy_block(cfg, stem):
     alter_id = _get(cfg, "alterId", "ALTER_ID", "alter_id", "aid", "AID", default="0")
     security = _get(cfg, "security", "SECURITY", "encryption", "ENC", default="none")
     inject = _get(cfg, "inject", "INJECT", "injectMode", "InjectMode", default="0")
-    ns = _get(cfg, "ns", "NS_SERVER", "nsServer")
-    dns = _get(cfg, "dns", "DNS", "dnsResolver")
-    pubkey = _get(cfg, "pubKey", "PUBKEY", "publicKey")
+    ns = _get(cfg, "ns", "NS_SERVER", "nsServer", "slowDnsNs", "slowDnsNS", "NS")
+    dns = _get(cfg, "dns", "DNS", "dnsResolver", "slowDnsDns", "slowDnsDNS")
+    pubkey = _get(cfg, "pubKey", "PUBKEY", "publicKey", "slowDnsPubKey", "slowDnsPUBKEY")
     mode = _get(cfg, "mode", "MODE")
     proto = str(_get(cfg, "protocol", "PROTOCOL", "type", "TYPE", default="")).upper()
     if not proto or proto in ("SSH", "1", ""):
@@ -369,7 +438,8 @@ def _proxy_block(cfg, stem):
         detail_lines.append(f"\U0001f511 UUID    : {value(uuid)}")
     if password and not uuid:
         detail_lines.append(f"\U0001f511 PASSWORD: {value(password)}")
-    detail_lines.append(f"\U0001f4c1 PATH    : {value(path)}")
+    if str(path).strip():
+        detail_lines.append(f"\U0001f4c1 PATH    : {value(path)}")
     detail_lines.append(f"\U0001f50c PORT    : {value(port)}")
     detail_lines.append(f"\U0001f6e1 TLS     : {value(tls_text)}")
     detail_lines.append(f"\U0001f6a6 TRANSPORT: {value(transport)}")
