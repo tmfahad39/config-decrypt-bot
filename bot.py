@@ -182,52 +182,106 @@ def _get(cfg, *keys, default=""):
     return default
 
 
+def _set_if_empty(profile, key, value):
+    if value in (None, ""):
+        return
+    if profile.get(key) in (None, ""):
+        profile[key] = value
+
+
 def _flatten_outbound(profile):
     if not isinstance(profile, dict):
         return profile
     outbounds = profile.get("outbounds")
     if not (isinstance(outbounds, list) and outbounds and isinstance(outbounds[0], dict)):
-        return profile
-    ob = outbounds[0]
-    protocol = ob.get("protocol")
-    if protocol:
-        profile["protocol"] = str(protocol)
-    settings = ob.get("settings")
-    if isinstance(settings, dict):
-        for key, value in settings.items():
-            if isinstance(value, (dict, list)) or value in (None, ""):
-                continue
-            profile.setdefault(key, value)
-    stream = ob.get("streamSettings")
-    if isinstance(stream, dict):
-        net = stream.get("network")
-        if net not in (None, ""):
-            profile.setdefault("transport", net)
-            profile.setdefault("net", net)
-        sec = stream.get("security")
-        if sec not in (None, ""):
-            profile.setdefault("tls", sec)
-        for key in ("wsSettings", "tcpSettings", "kcpSettings", "grpcSettings", "httpSettings", "h2Settings"):
-            st = stream.get(key)
-            if isinstance(st, dict):
-                if st.get("path") not in (None, ""):
-                    profile.setdefault("path", st.get("path"))
-                if isinstance(st.get("host"), list) and st.get("host"):
-                    profile.setdefault("host_header", st.get("host")[0])
-                elif st.get("host") not in (None, ""):
-                    profile.setdefault("host_header", st.get("host"))
-        tls_settings = stream.get("tlsSettings")
-        if isinstance(tls_settings, dict):
-            sni = tls_settings.get("serverName")
-            if sni not in (None, ""):
-                profile.setdefault("sni", sni)
-                profile.setdefault("host", profile.get("host", sni))
-        for key in ("rawSettings", "tcpSettings"):
-            st = stream.get(key)
-            if isinstance(st, dict):
-                header = st.get("header")
-                if isinstance(header, dict) and header.get("type") not in (None, ""):
-                    profile.setdefault("headerType", header.get("type"))
+        # handle V2Ray-style outbound inside profile if present
+        pass
+    # V2Ray outbounds (may be nested under profile already)
+    obs = outbounds if isinstance(outbounds, list) else profile.get("outbounds")
+    if isinstance(obs, list) and obs and isinstance(obs[0], dict):
+        ob = obs[0]
+        protocol = ob.get("protocol")
+        if protocol:
+            profile["protocol"] = str(protocol)
+        settings = ob.get("settings")
+        if isinstance(settings, dict):
+            vnext = settings.get("vnext")
+            if isinstance(vnext, list) and vnext and isinstance(vnext[0], dict):
+                v0 = vnext[0]
+                _set_if_empty(profile, "address", v0.get("address"))
+                _set_if_empty(profile, "port", v0.get("port"))
+                users = v0.get("users")
+                if isinstance(users, list) and users and isinstance(users[0], dict):
+                    u0 = users[0]
+                    _set_if_empty(profile, "id", u0.get("id"))
+                    _set_if_empty(profile, "uuid", u0.get("id"))
+                    _set_if_empty(profile, "alterId", u0.get("alterId"))
+                    _set_if_empty(profile, "aid", u0.get("alterId"))
+                    _set_if_empty(profile, "encryption", u0.get("encryption"))
+                    _set_if_empty(profile, "encryption", u0.get("security"))
+                    _set_if_empty(profile, "flow", u0.get("flow"))
+            servers = settings.get("servers")
+            if isinstance(servers, list) and servers and isinstance(servers[0], dict):
+                s0 = servers[0]
+                _set_if_empty(profile, "address", s0.get("address"))
+                _set_if_empty(profile, "port", s0.get("port"))
+                _set_if_empty(profile, "password", s0.get("password"))
+            for key, value in settings.items():
+                if isinstance(value, (dict, list)) or value in (None, ""):
+                    continue
+                _set_if_empty(profile, key, value)
+        stream = ob.get("streamSettings")
+        if isinstance(stream, dict):
+            net = stream.get("network")
+            _set_if_empty(profile, "transport", net)
+            _set_if_empty(profile, "net", net)
+            sec = stream.get("security")
+            _set_if_empty(profile, "tls", sec)
+            _set_if_empty(profile, "security", sec)
+            for key in ("wsSettings", "tcpSettings", "kcpSettings", "grpcSettings", "httpSettings", "h2Settings"):
+                st = stream.get(key)
+                if isinstance(st, dict):
+                    if st.get("path") not in (None, ""):
+                        _set_if_empty(profile, "path", st.get("path"))
+                    host = st.get("host")
+                    if isinstance(host, list) and host:
+                        _set_if_empty(profile, "host_header", host[0])
+                    elif host not in (None, ""):
+                        _set_if_empty(profile, "host_header", host)
+            tls_settings = stream.get("tlsSettings")
+            if isinstance(tls_settings, dict):
+                sni = tls_settings.get("serverName")
+                _set_if_empty(profile, "sni", sni)
+            for key in ("rawSettings", "tcpSettings"):
+                st = stream.get(key)
+                if isinstance(st, dict):
+                    header = st.get("header")
+                    if isinstance(header, dict) and header.get("type") not in (None, ""):
+                        _set_if_empty(profile, "headerType", header.get("type"))
+
+    # InjectConfig-derived fields
+    _set_if_empty(profile, "inject", profile.get("Mode"))
+    _set_if_empty(profile, "Mode", profile.get("Mode"))
+    if profile.get("ProxyHost") not in (None, "") and profile.get("ProxyPort") not in (None, ""):
+        _set_if_empty(profile, "proxy", f"{profile.get('ProxyHost')}:{profile.get('ProxyPort')}")
+    _set_if_empty(profile, "sni", profile.get("ServerNameIndication"))
+    if profile.get("DnsttDnsHost") not in (None, ""):
+        dns_host = profile.get("DnsttDnsHost")
+        dns_port = profile.get("DnsttDnsPort")
+        if dns_port not in (None, ""):
+            _set_if_empty(profile, "dns", f"{dns_host}:{dns_port}")
+        else:
+            _set_if_empty(profile, "dns", dns_host)
+    _set_if_empty(profile, "payload", profile.get("Payload"))
+    _set_if_empty(profile, "ns", profile.get("DnsttServerName") or profile.get("slowDnsNs"))
+    _set_if_empty(profile, "pubKey", profile.get("DnsttPubkey") or profile.get("slowDnsPubKey"))
+
+    # host fallback
+    if profile.get("host") in (None, "") and profile.get("address") not in (None, ""):
+        profile["host"] = profile.get("address")
+    if profile.get("address") in (None, "") and profile.get("host") not in (None, ""):
+        profile["address"] = profile.get("host")
+
     return profile
 
 
@@ -246,17 +300,36 @@ def _profiles(data):
             profile = {}
             for sec in sections:
                 for key, value in sec.items():
-                    if isinstance(value, (dict, list)):
-                        if str(key).lower() == "config":
+                    if str(key).lower() == "config":
                             cfgval = value
                             if isinstance(cfgval, str):
-                                try:
-                                    cfgval = json.loads(cfgval)
-                                except Exception:
-                                    cfgval = None
+                                attempts = [
+                                    cfgval,
+                                    cfgval.replace("$MUX_ENABLED", "false")
+                                          .replace("$SOCKS5_LISTEN_HOST", '"0.0.0.0"')
+                                          .replace("$SOCKS5_LISTEN_PORT", "1080")
+                                          .replace("$HTTP_LISTEN_HOST", '"0.0.0.0"')
+                                          .replace("$HTTP_LISTEN_PORT", "1081"),
+                                ]
+                                for att in attempts:
+                                    try:
+                                        cfgval = json.loads(att)
+                                        break
+                                    except Exception:
+                                        cfgval = None
+                                if cfgval is None:
+                                    m = re.search(r'"outbounds"\s*:\s*(\[.*\])', value, re.S)
+                                    if m:
+                                        snippet = m.group(1).replace("$MUX_ENABLED", "false")
+                                        try:
+                                            cfgval = {"outbounds": json.loads(snippet)}
+                                        except Exception:
+                                            cfgval = None
                             if isinstance(cfgval, dict):
                                 for k, v in cfgval.items():
-                                    if not isinstance(v, (dict, list)) and v not in (None, ""):
+                                    if k.lower() == "outbounds" and isinstance(v, list):
+                                        profile["outbounds"] = v
+                                    elif not isinstance(v, (dict, list)) and v not in (None, ""):
                                         profile.setdefault(k, v)
                     elif value not in (None, ""):
                         profile.setdefault(key, value)
@@ -442,6 +515,10 @@ def _ssh_block(cfg, stem):
 
 def _proxy_block(cfg, stem):
     address = _get(cfg, "address", "ADDRESS", "add", "host", "HOST", "serverAddress", "server", "Server", "ip", "IP")
+    host = _get(cfg, "host_header", "HOST", "host", "sni", default="")
+    sni = _get(cfg, "sni", "SNI", "serverName", "ServerNameIndication", default="")
+    proxy = _get(cfg, "proxy", "PROXY", default="")
+    payload = _get(cfg, "payload", "PAYLOAD", "Payload", default="")
     uuid = _get(cfg, "uuid", "UUID", "id", "ID", "userId", "user_id")
     password = _get(cfg, "password", "PASSWORD", "pass", "Pass")
     path = _get(cfg, "path", "PATH", "Path", "wsPath", "ws_path")
@@ -451,8 +528,9 @@ def _proxy_block(cfg, stem):
     tls_text = "ON \u2705" if tls_on else "OFF \u274c"
     transport = _get(cfg, "transport", "TRANSPORT", "net", "NET", "network", "type", "TYPE")
     alter_id = _get(cfg, "alterId", "ALTER_ID", "alter_id", "aid", "AID", default="0")
-    security = _get(cfg, "security", "SECURITY", "encryption", "ENC", default="none")
-    inject = _get(cfg, "inject", "INJECT", "injectMode", "InjectMode", default="0")
+    security = _get(cfg, "security", "SECURITY", default="none")
+    encryption = _get(cfg, "encryption", "ENCRYPTION", "cipher", "scy", "security", default="auto")
+    inject = _get(cfg, "inject", "INJECT", "injectMode", "InjectMode", "Mode", "mode", default="0")
     ns = _get(cfg, "ns", "NS_SERVER", "nsServer", "slowDnsNs", "slowDnsNS", "NS")
     dns = _get(cfg, "dns", "DNS", "dnsResolver", "slowDnsDns", "slowDnsDNS")
     pubkey = _get(cfg, "pubKey", "PUBKEY", "publicKey", "slowDnsPubKey", "slowDnsPUBKEY")
@@ -474,8 +552,14 @@ def _proxy_block(cfg, stem):
         "",
         f"\U0001f4cd ADDRESS : {value(address)}",
     ]
+    if host:
+        detail_lines.append(f"\U0001f310 HOST    : {value(host)}")
     if uuid:
         detail_lines.append(f"\U0001f511 UUID    : {value(uuid)}")
+    if sni:
+        detail_lines.append(f"\U0001f517 SNI     : {value(sni)}")
+    if proxy:
+        detail_lines.append(f"\U0001f9ed PROXY   : {value(proxy)}")
     if password and not uuid:
         detail_lines.append(f"\U0001f511 PASSWORD: {value(password)}")
     if str(path).strip():
@@ -486,6 +570,10 @@ def _proxy_block(cfg, stem):
     detail_lines.append(f"\U0001f522 ALTER ID: {value(alter_id)}")
     detail_lines.append(f"\U0001f512 SECURITY: {value(security)}")
     detail_lines.append(f"\U0001f9e9 INJECT  : {value(inject)}")
+    if payload:
+        detail_lines.append("")
+        detail_lines.append("\U0001f4e6 PAYLOAD:")
+        detail_lines.append(value(payload))
     if ns:
         detail_lines.append(f"\U0001f310 DNS SERVER NAME : {value(ns)}")
     if dns:
@@ -510,10 +598,12 @@ def _proxy_block(cfg, stem):
             "id": str(uuid),
             "aid": str(alter_id or 0),
             "net": str(transport or "tcp"),
-            "type": str(security or "none"),
-            "host": "",
+            "type": "none",
+            "host": str(host or address),
             "path": str(path or ""),
             "tls": "tls" if tls_on else "",
+            "scy": str(encryption or "auto"),
+            "sni": str(sni or ""),
         }
         link = "vmess://" + _b64.b64encode(_json.dumps(vmess_obj).encode()).decode()
     elif proto == "TROJAN":
