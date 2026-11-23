@@ -592,9 +592,7 @@ def format_result(result, stem):
 
 async def send_result(message, name: str, result: str, reply_to_message_id=None) -> None:
     text, pairs = format_result(result, Path(name).stem)
-    rows = _copy_rows(pairs)
-    markup = InlineKeyboardMarkup(rows) if rows else None
-    kwargs = dict(parse_mode=ParseMode.HTML, reply_markup=markup)
+    kwargs = dict(parse_mode=ParseMode.HTML)
     if reply_to_message_id is not None:
         kwargs["reply_to_message_id"] = reply_to_message_id
     else:
