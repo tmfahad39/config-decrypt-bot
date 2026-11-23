@@ -463,7 +463,7 @@ def _proxy_block(cfg, stem):
         ("DNS", dns),
         ("PUBKEY", pubkey),
         ("LINK", link),
-        ("CODE", link),
+        ("Code", link),
     ]
     return body, link, [p for p in pairs if str(p[1]).strip()]
 
