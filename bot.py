@@ -764,6 +764,14 @@ async def verify_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     await query.edit_message_reply_markup(reply_markup=None)
                 except Exception:
                     pass
+        try:
+            chat_id = query.message.chat_id if query.message is not None else None
+            if chat_id is None and query.from_user is not None:
+                chat_id = query.from_user.id
+            if chat_id is not None:
+                await context.bot.send_message(chat_id=chat_id, text="\u2705 Verified")
+        except Exception as exc:
+            logger.warning("Could not send verification confirmation: %s", exc)
     else:
         try:
             await query.answer("Not joined", show_alert=True)
