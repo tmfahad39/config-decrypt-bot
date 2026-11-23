@@ -163,11 +163,85 @@ def _profiles(data):
     return [{"value": data}]
 
 
+def _tokenize_key(key):
+    # Split camelCase / snake_case / kebab into lowercase words.
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", str(key))
+    text = re.sub(r"[_\-]+", " ", text)
+    return [w.lower() for w in text.split() if w]
+
+
+def _emoji_for_key(key):
+    tokens = _tokenize_key(key)
+    token_str = " ".join(tokens)
+    mapping = [
+        (["slow", "dns", "dns"], "\U0001f30d"),
+        (["slow", "dns", "ns"], "\U0001f310"),
+        (["slow", "dns", "pub", "key"], "\U0001f510"),
+        (["slow", "dns", "pubkey"], "\U0001f510"),
+        (["slow", "dns"], "\U0001f40c"),
+        (["slow", "dns", "handling"], "\U0001f40c"),
+        (["password"], "\U0001f511"),
+        (["pass"], "\U0001f511"),
+        (["username"], "\U0001f464"),
+        (["user"], "\U0001f464"),
+        (["public", "key"], "\U0001f510"),
+        (["pubkey"], "\U0001f510"),
+        (["host"], "\U0001f310"),
+        (["address"], "\U0001f310"),
+        (["server"], "\U0001f5a5"),
+        (["sni"], "\U0001f512"),
+        (["ssl"], "\U0001f512"),
+        (["port"], "\U0001f50c"),
+        (["protocol"], "\U0001f6e1"),
+        (["proxy"], "\U0001f500"),
+        (["payload"], "\U0001f4e6"),
+        (["dns"], "\U0001f30d"),
+        (["ns"], "\U0001f310"),
+        (["mode"], "\U0001f9e9"),
+        (["enabled"], "\u2705"),
+        (["bypass"], "\U0001f6ab"),
+        (["window"], "\U0001fa9f"),
+        (["kcp"], "\u26a1"),
+        (["transport"], "\U0001f680"),
+        (["handling"], "\U0001f527"),
+        (["method"], "\u2699"),
+        (["selection"], "\u2699"),
+        (["version"], "\u2699"),
+        (["type"], "\U0001f3f7"),
+        (["name"], "\U0001f6a8"),
+    ]
+
+    def is_subseq(needle, haystack):
+        # contiguous subsequence
+        n = len(needle)
+        for i in range(len(haystack) - n + 1):
+            if haystack[i:i + n] == needle:
+                return True
+        return False
+
+    for needle, emoji in mapping:
+        if is_subseq(needle, tokens):
+            return emoji
+    return "\U0001f539"
+
+
+def _pretty_value(value):
+    text = str(value).strip()
+    lowered = text.lower()
+    if lowered == "true":
+        return "\u2705 True"
+    if lowered == "false":
+        return "\u274c False"
+    return text
+
+
 def _scalar_fields(cfg, limit=18):
     lines = []
     pairs = []
     for key, value in cfg.items():
         if isinstance(value, (dict, list)) or value in (None, ""):
+            continue
+        if _tokenize_key(key) == ["name"]:
             continue
         text = str(value).strip()
         if text.startswith("{") or "<" in text:
@@ -175,8 +249,10 @@ def _scalar_fields(cfg, limit=18):
         cleaned = _clean(value, limit=160)
         if not cleaned:
             continue
+        cleaned = _pretty_value(cleaned)
+        emoji = _emoji_for_key(key)
         lines.append(
-            f"{html.escape(str(key)):<20}: <code>{html.escape(cleaned)}</code>"
+            f"{emoji} {html.escape(str(key)):<24}: <code>{html.escape(cleaned)}</code>"
         )
         pairs.append((str(key), cleaned))
         if len(lines) >= limit:
