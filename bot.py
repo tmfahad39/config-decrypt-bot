@@ -758,7 +758,7 @@ async def verify_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 pass
     else:
         try:
-            await query.answer("You haven't joined yet.", show_alert=True)
+            await query.answer("Not joined", show_alert=True)
         except Exception:
             pass
 
