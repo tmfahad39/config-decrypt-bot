@@ -749,13 +749,21 @@ async def verify_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     status = await is_member(context, user_id)
     if status is True:
+        deleted = False
         try:
-            await query.message.delete()
-        except Exception:
+            if query.message is not None:
+                await query.message.delete()
+                deleted = True
+        except Exception as exc:
+            logger.warning("Could not delete gate message: %s", exc)
+        if not deleted:
             try:
-                await query.edit_message_text("Verified! You can now use the bot.")
+                await query.edit_message_text("\u2705 Verified! You can now use the bot.", reply_markup=None)
             except Exception:
-                pass
+                try:
+                    await query.edit_message_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
     else:
         try:
             await query.answer("Not joined", show_alert=True)
