@@ -1,6 +1,6 @@
 # Config Decrypt Bot
 
-Telegram bot that decrypts `.hc`, `.dark`, `.ssc`, `.ehi` and `.1ftnl` VPN config files and
+Telegram bot that decrypts `.hc`, `.dark`, `.ssc`, `.ehi`, `.1ftnl` and `.nm` VPN config files and
 replies with the decoded JSON. Password-protected files get a
 "🔒 Password Protected — Reply with password." prompt, then decode on reply.
 
@@ -18,7 +18,7 @@ export BOT_TOKEN="123456:YOUR_TOKEN"
 python bot.py
 ```
 
-Then send a `.hc` / `.dark` / `.ssc` / `.ehi` / `.1ftnl` file to your bot in Telegram.
+Then send a `.hc` / `.dark` / `.ssc` / `.ehi` / `.1ftnl` / `.nm` file to your bot in Telegram.
 
 ## Get a bot token
 
@@ -43,5 +43,5 @@ Then send a `.hc` / `.dark` / `.ssc` / `.ehi` / `.1ftnl` file to your bot in Tel
 ## Files
 
 - `bot.py` — Telegram handlers, file download, timeout/size limits, reply.
-- `vpn_decoder.py` — offline decoder for `.hc`, `.dark`, `.ssc`, `.ehi`, `.1ftnl`.
+- `vpn_decoder.py` — offline decoder for `.hc`, `.dark`, `.ssc`, `.ehi`, `.1ftnl`, `.nm`.
 - `render.yaml` — Render Blueprint for a Worker service.

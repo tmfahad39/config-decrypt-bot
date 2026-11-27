@@ -238,7 +238,7 @@ def json_default(value):
 def main():
     parser = argparse.ArgumentParser(description='Offline HC / DARK / SSC VPN decoder')
     parser.add_argument('files', nargs='+', type=Path, help='one or more VPN config files')
-    parser.add_argument('--format', choices=('auto', 'hc', 'dark', 'ssc', 'ehi', '1ftnl'), default='auto')
+    parser.add_argument('--format', choices=('auto', 'hc', 'dark', 'ssc', 'ehi', '1ftnl', 'nm'), default='auto')
     parser.add_argument('--password', action='store_true', help='securely prompt for HC password')
     parser.add_argument('--password-value', help='HC password to use without prompting')
     parser.add_argument('--hwid', help='HWID for a protected HC file')
@@ -271,8 +271,10 @@ def main():
                 result = decode_ehi(data)
             elif kind == '1ftnl':
                 result = decode_1ftnl(data, password)
+            elif kind == 'nm':
+                result = decode_nm(data)
             else:
-                raise ValueError(f'Unsupported format .{kind}; supported: .hc, .dark, .ssc, .ehi, .1ftnl')
+                raise ValueError(f'Unsupported format .{kind}; supported: .hc, .dark, .ssc, .ehi, .1ftnl, .nm')
             output = json.dumps(result, ensure_ascii=False, indent=2, default=json_default)
             if args.stdout:
                 print(output)
@@ -651,6 +653,136 @@ def decode_ehi(data):
     if isinstance(result, dict):
         result.setdefault("protocol", "EHI")
     return result
+
+
+# ---------------------------------------------------------------------------
+# NetMod (.nm) support.
+#
+# A locked NetMod (com.netmod.syna) export is a text file holding base64
+# (standard alphabet, whitespace ignored) of an AES-128-ECB ciphertext
+# with PKCS7 padding. The app tries three fixed 16-byte keys in order
+# (recovered from the app's native core; the same scheme is used by the
+# open-source Pantegnos decryptor, internal/modules/impl/netmod.go):
+#   "<n3t5yn4^n3tm0d>", "_netsyna_netmod_", "nicetrybuddygoon"
+# The plaintext is the profile JSON (SSH / VMess / VLESS style fields),
+# or occasionally a plain share URI.
+# ---------------------------------------------------------------------------
+
+_NM_KEYS = [b'<n3t5yn4^n3tm0d>', b'_netsyna_netmod_', b'nicetrybuddygoon']
+
+
+def _nm_flatten(parsed):
+    """Flatten a NetMod profile (possibly nested) and add the alias keys
+    the bot's formatter looks for (host/port/username/password/...)."""
+    flat = {}
+
+    def collect(obj):
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if isinstance(value, (dict, list)):
+                    collect(value)
+                elif value not in (None, ''):
+                    flat.setdefault(str(key), value)
+        elif isinstance(obj, list):
+            for item in obj:
+                collect(item)
+
+    collect(parsed)
+    out = dict(flat)
+
+    def pick(*keys):
+        for key in keys:
+            value = flat.get(key)
+            if value not in (None, ''):
+                return value
+        return None
+
+    aliases = {
+        'address': pick('add', 'address', 'server'),
+        'host': pick('sshHost', 'add', 'address', 'server', 'hostname', 'host'),
+        'port': pick('sshPort', 'port'),
+        'username': pick('sshUsername', 'username', 'user', 'sshUser'),
+        'password': pick('sshPassword', 'password', 'pass'),
+        'payload': pick('payload'),
+        'proxy': pick('httpProxy', 'remoteProxy', 'proxy'),
+        'sni': pick('sni', 'SNI', 'serverNameIndication'),
+        'uuid': pick('id', 'uuid'),
+        'ns': pick('ns', 'nsServer', 'slowDnsNs', 'dnsttServerName'),
+        'dns': pick('dns', 'dnsResolver', 'slowDnsDns'),
+        'pubKey': pick('pubKey', 'publicKey', 'slowDnsPubKey',
+                        'slowdnsPublickey', 'dnsttPublicKey'),
+    }
+    proxy_host = pick('proxyHost')
+    if proxy_host and not aliases['proxy']:
+        proxy_port = pick('proxyPort')
+        aliases['proxy'] = (f'{proxy_host}:{proxy_port}'
+                             if proxy_port not in (None, '') else proxy_host)
+    for key, value in aliases.items():
+        if value not in (None, '') and out.get(key) in (None, ''):
+            out[key] = value
+    if 'protocol' not in out:
+        ptype = str(flat.get('type') or '').upper()
+        if ptype in ('SSH', 'VLESS', 'VMESS', 'TROJAN'):
+            out['protocol'] = ptype
+        elif flat.get('id') and flat.get('add'):
+            out['protocol'] = 'VMESS'
+        elif flat.get('sshHost') or flat.get('sshUsername'):
+            out['protocol'] = 'SSH'
+    out['source'] = 'NetMod'
+    return out
+
+
+def decode_nm(data):
+    from Crypto.Cipher import AES
+
+    if isinstance(data, (bytes, bytearray)):
+        text = bytes(data).decode('utf-8', 'ignore').strip()
+    else:
+        text = str(data).strip()
+    # An unlocked export can be plain JSON already.
+    if text.startswith('{'):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return _nm_flatten(parsed)
+        except ValueError:
+            pass
+    compact = ''.join(text.split())
+    raw = None
+    for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+        try:
+            raw = decoder(compact + '=' * (-len(compact) % 4))
+            break
+        except Exception:
+            continue
+    if raw is None or not raw or len(raw) % 16 != 0:
+        raise ValueError('Invalid NetMod (.nm) file')
+
+    plaintext = None
+    for key in _NM_KEYS:
+        decrypted = AES.new(key, AES.MODE_ECB).decrypt(raw)
+        if not decrypted:
+            continue
+        pad = decrypted[-1]
+        if 1 <= pad <= 16 and decrypted[-pad:] == bytes([pad]) * pad:
+            plaintext = decrypted[:-pad]
+            break
+    if plaintext is None:
+        raise ValueError(
+            'Could not decrypt NetMod file (unsupported version or corrupt data)'
+        )
+    pt_text = plaintext.decode('utf-8', 'replace').strip()
+    try:
+        parsed = json.loads(pt_text)
+    except ValueError:
+        return {'source': 'NetMod', 'raw': pt_text}
+    if isinstance(parsed, dict):
+        return _nm_flatten(parsed)
+    if isinstance(parsed, list):
+        return {'source': 'NetMod',
+                'CONFIGS': [_nm_flatten(item) if isinstance(item, dict)
+                            else {'value': item} for item in parsed]}
+    return {'source': 'NetMod', 'value': parsed}
 
 
 # ---------------------------------------------------------------------------
