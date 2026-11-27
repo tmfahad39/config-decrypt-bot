@@ -238,7 +238,7 @@ def json_default(value):
 def main():
     parser = argparse.ArgumentParser(description='Offline HC / DARK / SSC VPN decoder')
     parser.add_argument('files', nargs='+', type=Path, help='one or more VPN config files')
-    parser.add_argument('--format', choices=('auto', 'hc', 'dark', 'ssc'), default='auto')
+    parser.add_argument('--format', choices=('auto', 'hc', 'dark', 'ssc', 'ehi', '1ftnl'), default='auto')
     parser.add_argument('--password', action='store_true', help='securely prompt for HC password')
     parser.add_argument('--password-value', help='HC password to use without prompting')
     parser.add_argument('--hwid', help='HWID for a protected HC file')
@@ -259,6 +259,8 @@ def main():
                     kind = 'dark'
                 elif data.lstrip().startswith(b'ssc://'):
                     kind = 'ssc'
+                elif data.lstrip().startswith((b'1FTnl.', b'1FT1.', b'1ftunnel://')):
+                    kind = '1ftnl'
             if kind == 'hc':
                 result = decode_hc(data, password, args.hwid)
             elif kind == 'dark':
@@ -267,8 +269,10 @@ def main():
                 result = decode_ssc(data)
             elif kind == 'ehi':
                 result = decode_ehi(data)
+            elif kind == '1ftnl':
+                result = decode_1ftnl(data, password)
             else:
-                raise ValueError(f'Unsupported format .{kind}; supported: .hc, .dark, .ssc, .ehi')
+                raise ValueError(f'Unsupported format .{kind}; supported: .hc, .dark, .ssc, .ehi, .1ftnl')
             output = json.dumps(result, ensure_ascii=False, indent=2, default=json_default)
             if args.stdout:
                 print(output)
@@ -647,6 +651,304 @@ def decode_ehi(data):
     if isinstance(result, dict):
         result.setdefault("protocol", "EHI")
     return result
+
+
+# ---------------------------------------------------------------------------
+# 1F Tunnel (.1ftnl) support.
+#
+# Format reverse-engineered from the 1FTunnel Android app
+# (com.oneftunnel.app, native liboneftunnel-security.so):
+#
+#   File text: "1FTnl." + base64url(raw), also shared as
+#   "1ftunnel://1FTnl/..." links (older prefix "1FT1.").
+#   raw layout:
+#     [0]        format version (3)
+#     [1:4]      flags
+#     [4:20]     HKDF salt (16 bytes)
+#     [20:32]    AES-256-GCM nonce (12 bytes)
+#     [32:36]    u32 BE length of the AAD block
+#     [36:40]    u32 BE length of the ciphertext (tag included)
+#     [40:...]   AAD block (header metadata: package name, signing-cert
+#                SHA-256 hex, version, type, created/expired timestamps,
+#                blockRoot flag, lock mode, key version)
+#     [...]      AES-256-GCM ciphertext + 16-byte tag
+#   Key derivation (HMAC-SHA256 chain, HKDF extract + single expand block):
+#     master  = app-embedded secret below
+#     if a password is set: master = HMAC(master, "1FT1 password v2" + pw)
+#     PRK     = HMAC(salt, master)
+#     key     = HMAC(PRK, "1FT1 HKDF AES-256-GCM v2" + AAD + b"\x01")
+#     ("v1" labels are used by older app versions; both are tried.)
+#   Plaintext: "CFG1" + 1 version byte + big-endian fields in the
+#   java.io.DataOutputStream style (u32 length-prefixed UTF-8 strings,
+#   -1 length = null), in this order: id, name, createdAt (i64), message,
+#   field-locks mask (i32), then optional SSH / inject / DNS / Xray /
+#   SlowDNS sections, each introduced by a boolean byte.
+# ---------------------------------------------------------------------------
+
+_FTNL_MASTER = bytes.fromhex(
+    "9e4f569a0a6cfd2da000b9de35ffe74a4e605c3eaecbdf477a13d709da233971"
+)
+_FTNL_INJECT_MODES = ["DIRECT", "PROXY", "PROXY_SNI", "SLOWDNS", "SSH_PAYLOAD", "WILDCARD"]
+_FTNL_XRAY_PROTOCOLS = ["TROJAN", "VLESS", "VMESS"]
+_FTNL_TLS_MODES = ["NONE", "REALITY", "TLS"]
+_FTNL_NETWORKS = ["GRPC", "HTTPUPGRADE", "RAW", "WS", "XHTTP"]
+_FTNL_RECORD_TYPES = ["A", "AAAA", "AUTO", "CNAME", "MX", "NS", "NULL", "SRV", "TXT"]
+
+
+def _ftnl_hmac(key, msg):
+    return hmac.new(key, msg, 'sha256').digest()
+
+
+def _ftnl_derive_key(salt, aad, password):
+    """Yield candidate AES-256 keys for the given password (or None)."""
+    masters = []
+    if password is None:
+        masters.append(_FTNL_MASTER)
+    else:
+        for encoding in ('utf-8', 'utf-16-be', 'utf-16-le'):
+            pw = password.encode(encoding)
+            for label in (b'1FT1 password v2', b'1FT1 password v1'):
+                masters.append(_ftnl_hmac(_FTNL_MASTER, label + pw))
+    for master in masters:
+        prk = _ftnl_hmac(salt, master)
+        for info in (b'1FT1 HKDF AES-256-GCM v2', b'1FT1 HKDF AES-256-GCM v1'):
+            yield _ftnl_hmac(prk, info + aad + b'\x01')
+
+
+class _FtnlReader:
+    def __init__(self, buf):
+        self.buf = buf
+        self.pos = 0
+
+    def take(self, count):
+        if count < 0 or self.pos + count > len(self.buf):
+            raise ValueError('Truncated 1FTnl payload')
+        out = self.buf[self.pos:self.pos + count]
+        self.pos += count
+        return out
+
+    def u8(self):
+        return self.take(1)[0]
+
+    def boolean(self):
+        return self.u8() != 0
+
+    def i32(self):
+        return struct.unpack('>i', self.take(4))[0]
+
+    def i64(self):
+        return struct.unpack('>q', self.take(8))[0]
+
+    def string(self):
+        length = self.i32()
+        if length < 0:
+            return None
+        return self.take(length).decode('utf-8', 'replace')
+
+
+def _ftnl_parse_payload(pt):
+    if not pt.startswith(b'CFG1'):
+        raise ValueError('Bad 1FTnl payload magic')
+    r = _FtnlReader(pt[4:])
+    version = r.u8()
+    cfg = {'version': version}
+    cfg['id'] = r.string()
+    cfg['name'] = r.string()
+    cfg['createdAt'] = r.i64()
+    cfg['message'] = r.string()
+    cfg['fieldLocks'] = r.i32()
+    if r.boolean():
+        cfg['ssh'] = {
+            'host': r.string(), 'port': r.i32(),
+            'username': r.string(), 'password': r.string(),
+        }
+    if r.boolean():
+        inject = {
+            'mode': r.u8(), 'payload': r.string(), 'proxyHost': r.string(),
+            'proxyPort': r.i32(), 'sni': r.string(), 'wildcardHost': r.string(),
+        }
+        if 0 <= inject['mode'] < len(_FTNL_INJECT_MODES):
+            inject['modeName'] = _FTNL_INJECT_MODES[inject['mode']]
+        cfg['inject'] = inject
+    if r.boolean():
+        cfg['dns'] = {'primary': r.string(), 'secondary': r.string()}
+    if r.boolean():
+        xray = {
+            'protocol': r.u8(), 'host': r.string(), 'port': r.i32(),
+            'uuid': r.string(), 'password': r.string(), 'security': r.u8(),
+            'network': r.u8(), 'path': r.string(), 'serviceName': r.string(),
+            'sni': r.string(), 'hostHeader': r.string(),
+            'wildcardHost': r.string(), 'allowInsecure': r.boolean(),
+            'alpn': r.string(),
+        }
+        if 0 <= xray['protocol'] < len(_FTNL_XRAY_PROTOCOLS):
+            xray['protocolName'] = _FTNL_XRAY_PROTOCOLS[xray['protocol']]
+        if 0 <= xray['security'] < len(_FTNL_TLS_MODES):
+            xray['securityName'] = _FTNL_TLS_MODES[xray['security']]
+        if 0 <= xray['network'] < len(_FTNL_NETWORKS):
+            xray['networkName'] = _FTNL_NETWORKS[xray['network']]
+        if version >= 4:
+            xray['flow'] = r.string()
+            xray['fingerprint'] = r.string()
+            xray['realityPublicKey'] = r.string()
+            xray['shortId'] = r.string()
+            xray['spiderX'] = r.string()
+        if version >= 5:
+            xray['mode'] = r.string()
+        cfg['xray'] = xray
+    if version >= 6 and r.boolean():
+        slow = {
+            'resolver': r.string(), 'nameserver': r.string(),
+            'publicKey': r.string(), 'recordType': r.u8(),
+        }
+        if 0 <= slow['recordType'] < len(_FTNL_RECORD_TYPES):
+            slow['recordTypeName'] = _FTNL_RECORD_TYPES[slow['recordType']]
+        cfg['slowDns'] = slow
+    return cfg
+
+
+def _ftnl_flatten(cfg, header_type):
+    """Shape a parsed 1FTnl payload like the other decoders' results so the
+    bot's formatter renders it the same way."""
+    out = {'source': '1FTunnel'}
+    if cfg.get('name'):
+        out['name'] = cfg['name']
+    if cfg.get('message'):
+        out['message'] = cfg['message']
+    if cfg.get('createdAt'):
+        out['createdAt'] = cfg['createdAt']
+    ssh = cfg.get('ssh') or {}
+    inject = cfg.get('inject') or {}
+    dns = cfg.get('dns') or {}
+    slow = cfg.get('slowDns') or {}
+    xray = cfg.get('xray') or {}
+
+    if slow:
+        out['TUNNEL_TYPE'] = 'slowdns'
+        out['MODE'] = 'SLOWDNS'
+        out['ns'] = slow.get('nameserver') or ''
+        out['dns'] = slow.get('resolver') or ''
+        out['pubKey'] = slow.get('publicKey') or ''
+    if ssh:
+        out['protocol'] = 'SSH'
+        out['host'] = ssh.get('host') or ''
+        out['port'] = ssh.get('port') or ''
+        out['username'] = ssh.get('username') or ''
+        out['password'] = ssh.get('password') or ''
+    if inject:
+        mode_name = inject.get('modeName')
+        if mode_name and 'MODE' not in out:
+            out['MODE'] = mode_name
+        if inject.get('payload'):
+            out['payload'] = inject['payload']
+        if inject.get('proxyHost'):
+            proxy = str(inject['proxyHost'])
+            if inject.get('proxyPort') not in (None, -1):
+                proxy += f":{inject['proxyPort']}"
+            out['proxy'] = proxy
+        if inject.get('sni'):
+            out['sni'] = inject['sni']
+    if dns:
+        if dns.get('primary'):
+            out['dnsPrimary'] = dns['primary']
+        if dns.get('secondary'):
+            out['dnsSecondary'] = dns['secondary']
+        if 'dns' not in out and dns.get('primary'):
+            out['dns'] = dns['primary']
+    if xray:
+        proto = xray.get('protocolName') or 'VLESS'
+        out['protocol'] = proto
+        out['address'] = xray.get('host') or ''
+        out['host'] = xray.get('host') or ''
+        out['port'] = xray.get('port') or ''
+        if xray.get('uuid'):
+            out['uuid'] = xray['uuid']
+        if xray.get('password'):
+            out['password'] = xray['password']
+        if xray.get('networkName'):
+            out['transport'] = xray['networkName'].lower()
+        security = xray.get('securityName')
+        if security:
+            out['security'] = security.lower()
+            out['tls'] = 'tls' if security in ('TLS', 'REALITY') else ''
+        if xray.get('path'):
+            out['path'] = xray['path']
+        if xray.get('sni'):
+            out['sni'] = xray['sni']
+        if xray.get('hostHeader'):
+            out['host_header'] = xray['hostHeader']
+        if xray.get('flow'):
+            out['flow'] = xray['flow']
+        if xray.get('realityPublicKey'):
+            out['realityPublicKey'] = xray['realityPublicKey']
+    if header_type:
+        out['configType'] = header_type
+    return out
+
+
+def decode_1ftnl(data, password=None):
+    from Crypto.Cipher import AES
+
+    if isinstance(data, (bytes, bytearray)):
+        text = bytes(data).decode('utf-8', 'ignore').strip()
+    else:
+        text = str(data).strip()
+    for prefix in ('1ftunnel://1FTnl/', '1ftunnel://1FT1/', '1FTnl.', '1FT1.'):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+            break
+    text = ''.join(text.split())
+    raw = None
+    if text:
+        for decoder in (base64.urlsafe_b64decode, base64.b64decode):
+            try:
+                raw = decoder(text + '=' * (-len(text) % 4))
+                break
+            except Exception:
+                continue
+    if raw is None:
+        raw = bytes(data) if isinstance(data, (bytes, bytearray)) else b''
+    if len(raw) < 40 + 16 or raw[0] != 3:
+        raise ValueError('Invalid 1FTnl file')
+
+    salt, nonce = raw[4:20], raw[20:32]
+    aad_len = struct.unpack('>I', raw[32:36])[0]
+    ct_len = struct.unpack('>I', raw[36:40])[0]
+    if 40 + aad_len + 16 > len(raw):
+        raise ValueError('Invalid 1FTnl file (bad header lengths)')
+    aad = raw[40:40 + aad_len]
+    ciphertext = raw[40 + aad_len:40 + aad_len + ct_len] if ct_len else raw[40 + aad_len:]
+    if len(ciphertext) <= 16:
+        raise ValueError('Invalid 1FTnl file (empty payload)')
+
+    # AAD tail: blockRoot flag, lock mode (0=open, 1=app-locked, 2=password),
+    # key version.
+    lock_mode = aad[-2] if len(aad) >= 3 else 0
+    if lock_mode == 2 and password is None:
+        raise ValueError(
+            'This 1FTnl file is password-protected: provide a password to decrypt it'
+        )
+
+    plaintext = None
+    for key in _ftnl_derive_key(salt, aad, password):
+        try:
+            cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+            cipher.update(aad)
+            plaintext = cipher.decrypt_and_verify(ciphertext[:-16], ciphertext[-16:])
+            break
+        except Exception:
+            continue
+    if plaintext is None:
+        if password is not None:
+            raise ValueError('Wrong password for this 1FTnl file')
+        if lock_mode == 2:
+            raise ValueError(
+                'This 1FTnl file is password-protected: provide a password to decrypt it'
+            )
+        raise ValueError('Could not decrypt 1FTnl file (unsupported version or corrupt data)')
+
+    cfg = _ftnl_parse_payload(plaintext)
+    return _ftnl_flatten(cfg, None)
 
 
 if __name__ == '__main__':

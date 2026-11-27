@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Telegram config-decrypt bot.
 
-Users send .hc / .dark / .ssc files; the bot replies with the decoded JSON.
+Users send .hc / .dark / .ssc / .ehi / .1ftnl files; the bot replies with the decoded JSON.
 If a file is password protected, the bot asks for the password in a reply.
 
 Only decode configs you own or are authorized to handle.
@@ -46,7 +46,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("config-decrypt-bot")
 
 DECODER = Path(__file__).with_name("vpn_decoder.py")
-SUPPORTED = {".hc", ".dark", ".ssc", ".ehi"}
+SUPPORTED = {".hc", ".dark", ".ssc", ".ehi", ".1ftnl"}
 MAX_FILE_BYTES = 5 * 1024 * 1024  # 5 MB
 REQUIRED_CHANNEL = "@ultimatedecryption"
 REQUIRED_CHANNEL_URL = "https://t.me/ultimatedecryption"
@@ -104,7 +104,7 @@ async def send_join_gate(message):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
-        "Send me a VPN config file (.hc, .dark or .ssc) and I'll send back "
+        "Send me a VPN config file (.hc, .dark, .ssc, .ehi or .1ftnl) and I'll send back "
         "the decoded details.\n\nIf a file is password protected I'll ask you "
         "for the password in a reply.\n\nUse /help for details.",
         reply_markup=join_group_markup(),
@@ -114,7 +114,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
         "Config Decrypt Bot\n\n"
-        "Supported files: .hc, .dark, .ssc\n"
+        "Supported files: .hc, .dark, .ssc, .ehi, .1ftnl\n"
         "Send a file as a document and I will reply with formatted details.\n"
         "Password protected files: reply to my password prompt with the "
         "password. Only the uploader can answer the password prompt.\n\n"
@@ -769,7 +769,7 @@ async def decode_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
         await message.reply_text(
             f"Unsupported file type: {suffix or '(none)'}. "
-            "Send a .hc, .dark or .ssc file.",
+            "Send a .hc, .dark, .ssc, .ehi or .1ftnl file.",
             reply_markup=join_group_markup(),
         )
         return
