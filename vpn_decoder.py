@@ -720,13 +720,28 @@ def _nm_flatten(parsed):
     for key, value in aliases.items():
         if value not in (None, '') and out.get(key) in (None, ''):
             out[key] = value
+    # The payload can hide under differently-named keys in a NetMod
+    # profile (payload / sshPayload / customPayload / ...). Take the
+    # longest string found under any key whose name mentions payload.
+    payload_candidates = [
+        value for key, value in flat.items()
+        if 'payload' in key.lower() and isinstance(value, str) and value.strip()
+    ]
+    if payload_candidates:
+        out['payload'] = max(payload_candidates, key=len)
+    if not out.get('name'):
+        for key in ('ps', 'remarks', 'remark', 'profileName'):
+            if flat.get(key):
+                out['name'] = flat[key]
+                break
     if 'protocol' not in out:
         ptype = str(flat.get('type') or '').upper()
         if ptype in ('SSH', 'VLESS', 'VMESS', 'TROJAN'):
             out['protocol'] = ptype
         elif flat.get('id') and flat.get('add'):
             out['protocol'] = 'VMESS'
-        elif flat.get('sshHost') or flat.get('sshUsername'):
+        elif flat.get('sshHost') or flat.get('sshUsername') or (
+                out.get('username') and out.get('host')):
             out['protocol'] = 'SSH'
     out['source'] = 'NetMod'
     return out

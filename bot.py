@@ -476,17 +476,37 @@ def _ssh_block(cfg, stem):
     def value(text):
         return f"<code>{html.escape(_clean(text))}</code>"
 
-    detail_lines = [
-        f"\U0001f6a8 NAME: {html.escape(_clean(stem))}",
-        "",
-        f"\U0001f310 SSH HOST        : {value(host)}",
-        f"\U0001f50c SSH PORT        : {value(port)}",
-        f"\U0001f464 SSH USER        : {value(user)}",
-        f"\U0001f511 SSH PASS        : {value(password)}",
-    ]
+    is_netmod = str(cfg.get("source", "")).strip().lower() == "netmod"
+    if is_netmod:
+        detail_lines = [
+            f"\U0001f6a8 NAME: {html.escape(_clean(stem))}",
+            "",
+            f"\U0001f310 HOST    : {value(host)}",
+            f"\U0001f50c PORT    : {value(port)}",
+            f"\U0001f464 USER    : {value(user)}",
+            f"\U0001f511 PASS    : {value(password)}",
+        ]
+    else:
+        detail_lines = [
+            f"\U0001f6a8 NAME: {html.escape(_clean(stem))}",
+            "",
+            f"\U0001f310 SSH HOST        : {value(host)}",
+            f"\U0001f50c SSH PORT        : {value(port)}",
+            f"\U0001f464 SSH USER        : {value(user)}",
+            f"\U0001f511 SSH PASS        : {value(password)}",
+        ]
     inject = _get(cfg, "inject", "INJECT", "Mode", "mode", default="")
     proxy = _get(cfg, "proxy", "PROXY", default="")
-    if str(inject).strip():
+    if is_netmod:
+        # NetMod profiles carry a numeric mode, not a readable inject
+        # label; other bots render this as e.g. "NetMod SSH".
+        proto_label = str(
+            _get(cfg, "protocol", "PROTOCOL", "type", "TYPE", default="SSH")
+        ).upper()
+        detail_lines.append(
+            f"\U0001f9e9 INJECT  : {value('NetMod ' + proto_label)}"
+        )
+    elif str(inject).strip():
         detail_lines.append(f"\U0001f9e9 INJECT  : {value(inject)}")
     if str(proxy).strip():
         detail_lines.append(f"\U0001f9ed PROXY   : {value(proxy)}")
@@ -496,7 +516,7 @@ def _ssh_block(cfg, stem):
         detail_lines.append(f"\U0001f30d DNS RESOLVER    : {value(dns)}")
     if str(pubkey).strip():
         detail_lines.append(f"\U0001f510 DNS PUBLIC KEY  : {value(pubkey)}")
-    if str(mode).strip() and str(mode).strip() != str(inject).strip():
+    if not is_netmod and str(mode).strip() and str(mode).strip() != str(inject).strip():
         detail_lines.append(f"\U0001f9e9 MODE            : {value(mode)}")
     payload = _get(cfg, "payload", "PAYLOAD", "Payload", default="")
     if str(payload).strip():
@@ -715,18 +735,26 @@ def format_result(result, stem):
             or (_get(cfg, "uuid", "UUID", "id", "ID") and (_get(cfg, "transport", "TRANSPORT", "net", "NET", "network") or _get(cfg, "path", "PATH", "Path")))
             or (_get(cfg, "password", "PASSWORD", "pass", "Pass") and _get(cfg, "address", "ADDRESS", "add", "host", "HOST") and _get(cfg, "transport", "TRANSPORT", "net", "NET", "network"))
         )
+        # NetMod results carry their real profile name inside the file;
+        # other bots show that name, not the (often renamed) file name.
+        display_stem = stem
+        if str(cfg.get("source", "")).strip().lower() == "netmod":
+            display_stem = _get(cfg, "name", "ps", default="") or stem
+        if not is_proxy and user and password and host and proto not in (
+                "SSH", "VLESS", "VMESS", "TROJAN"):
+            proto = "SSH"
         if is_proxy:
-            body, _, pairs = _proxy_block(cfg, stem)
+            body, _, pairs = _proxy_block(cfg, display_stem)
         elif user and password and host:
-            body, _, pairs = _ssh_block(cfg, stem)
+            body, _, pairs = _ssh_block(cfg, display_stem)
         else:
             fields, pairs = _scalar_fields(cfg)
             details = "\n".join(
-                [f"\U0001f6a8 NAME: {html.escape(_clean(stem))}", ""] + fields
+                [f"\U0001f6a8 NAME: {html.escape(_clean(display_stem))}", ""] + fields
             )
             body = f"<blockquote>{details}</blockquote>"
 
-        blocks.append(f"{BOX_TOP}\n   {_title(cfg, stem, proto)}\n{BOX_BOTTOM}\n\n{body}")
+        blocks.append(f"{BOX_TOP}\n   {_title(cfg, display_stem, proto)}\n{BOX_BOTTOM}\n\n{body}")
 
     if len(profiles) > 1:
         blocks.append(f"\u2026 and {len(profiles) - 1} more config(s)")
