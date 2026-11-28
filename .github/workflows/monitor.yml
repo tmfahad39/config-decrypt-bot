@@ -66,10 +66,8 @@ jobs:
               --body "The monitor detected a problem.
 
           - Reason: $reason
-          - Last run: \`$last_id\` (conclusion: \`$conclusion\`, ended ${age_min}m ago)
-
-          Check the run history: https://github.com/${{ github.repository }}/actions/workflows/bot.yml"
-            export ALERT_TEXT="🚨 Config decrypt bot may be down: $reason. Check https://github.com/$GH_REPO/actions/workflows/bot.yml"
+          - Last run: \`$last_id\` (conclusion: \`$conclusion\`, ended ${age_min}m ago)"
+            export ALERT_TEXT="🚨 Config decrypt bot may be down: $reason."
             python - <<'PY'
           import json
           import os
